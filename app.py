@@ -9,16 +9,13 @@ app = Flask(__name__)
 
 @app.after_request
 def ajouter_headers_cors(response):
-    """Autorise les appels depuis les apps web/mobile (fichiers HTML séparés), sans dépendance externe."""
+    """Autorise les appels depuis les apps web/mobile (fichiers HTML séparés), sans dépendance externe.
+    Flask gère automatiquement les requêtes OPTIONS (pré-vérification du navigateur) pour chaque route ;
+    ce hook ajoute simplement les bons en-têtes à TOUTES les réponses, y compris ces réponses automatiques."""
     response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
-    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PATCH, DELETE, OPTIONS'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PATCH, PUT, DELETE, OPTIONS'
     return response
-
-
-@app.route('/api/<path:chemin>', methods=['OPTIONS'])
-def cors_preflight(chemin):
-    return '', 204
 
 
 # ============================================================
