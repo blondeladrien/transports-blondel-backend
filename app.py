@@ -30,7 +30,7 @@ def login():
 
     conn = get_connection()
     utilisateur = conn.execute(
-        'SELECT * FROM utilisateurs WHERE identifiant = ? AND actif = 1',
+        'SELECT * FROM utilisateurs WHERE LOWER(identifiant) = LOWER(?) AND actif = 1',
         (identifiant,)
     ).fetchone()
     conn.close()
