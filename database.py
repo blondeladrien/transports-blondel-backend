@@ -1,11 +1,15 @@
 import sqlite3
 import os
 
-DB_PATH = os.path.join(os.path.dirname(__file__), 'transports_blondel.db')
+# En production, définissez la variable d'environnement DB_PATH pour pointer vers
+# le disque persistant Render (ex. /var/data/transports_blondel.db) — sans cette
+# variable, la base est stockée à côté du code, sur un disque effacé à chaque déploiement.
+DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(__file__), 'transports_blondel.db'))
 SCHEMA_PATH = os.path.join(os.path.dirname(__file__), 'schema.sql')
 
 
 def get_connection():
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute('PRAGMA foreign_keys = ON')
