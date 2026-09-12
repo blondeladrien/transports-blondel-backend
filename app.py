@@ -388,6 +388,16 @@ def facturer_ligne(ligne_id):
     return jsonify({'ok': True})
 
 
+@app.route('/api/facturation/<int:ligne_id>', methods=['DELETE'])
+@authentification_requise(['moderateur'])
+def supprimer_facturation(ligne_id):
+    conn = get_connection()
+    conn.execute('DELETE FROM facturation WHERE id = ?', (ligne_id,))
+    conn.commit()
+    conn.close()
+    return '', 204
+
+
 # ============================================================
 # DÉCLARATIONS DE JOURNÉE (prise de service, km départ/arrivée)
 # ============================================================
