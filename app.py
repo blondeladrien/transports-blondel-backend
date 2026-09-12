@@ -750,6 +750,21 @@ def liste_documents_chauffeurs():
     return jsonify([dict(l) for l in lignes])
 
 
+@app.route('/api/documents/chauffeurs/me', methods=['GET'])
+@authentification_requise(['chauffeur'])
+def mes_documents_chauffeur():
+    """Un chauffeur ne peut consulter que SES PROPRES documents, jamais ceux d'un autre."""
+    chauffeur = _chauffeur_id_du_token()
+    if not chauffeur:
+        return jsonify({'erreur': 'Fiche chauffeur introuvable'}), 404
+    conn = get_connection()
+    ligne = conn.execute(
+        'SELECT * FROM documents_chauffeurs WHERE chauffeur_id = ?', (chauffeur['id'],)
+    ).fetchone()
+    conn.close()
+    return jsonify(dict(ligne) if ligne else {})
+
+
 @app.route('/api/documents/tracteurs/<int:tracteur_id>', methods=['PUT'])
 @authentification_requise(['moderateur'])
 def enregistrer_documents_tracteur(tracteur_id):
