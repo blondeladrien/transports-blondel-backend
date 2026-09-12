@@ -446,7 +446,9 @@ def liste_declarations():
 @app.route('/api/declarations/aujourdhui', methods=['GET'])
 @authentification_requise(['chauffeur'])
 def declaration_du_jour():
-    """Renvoie la déclaration du jour, et propose le km de départ repris de la veille si le tracteur n'a pas changé."""
+    """Renvoie la déclaration du jour, et propose comme km de départ celui de la DERNIÈRE
+    clôture enregistrée (peu importe le nombre de jours écoulés depuis), à condition que
+    le tracteur n'ait pas changé entre-temps."""
     chauffeur = _chauffeur_id_du_token()
     if not chauffeur:
         return jsonify({'erreur': 'Fiche chauffeur introuvable'}), 404
