@@ -123,7 +123,11 @@ def creer_chauffeur():
 @authentification_requise(['moderateur'])
 def supprimer_chauffeur(chauffeur_id):
     conn = get_connection()
+    # Libère aussi le compte mobile associé (sinon son identifiant reste bloqué indéfiniment)
+    chauffeur = conn.execute('SELECT utilisateur_id FROM chauffeurs WHERE id = ?', (chauffeur_id,)).fetchone()
     conn.execute('DELETE FROM chauffeurs WHERE id = ?', (chauffeur_id,))
+    if chauffeur and chauffeur['utilisateur_id']:
+        conn.execute('DELETE FROM utilisateurs WHERE id = ?', (chauffeur['utilisateur_id'],))
     conn.commit()
     conn.close()
     return '', 204
@@ -859,6 +863,22 @@ def desactiver_compte(utilisateur_id):
     """Désactive un compte plutôt que de le supprimer (conserve l'historique lié)."""
     conn = get_connection()
     conn.execute('UPDATE utilisateurs SET actif = 0 WHERE id = ?', (utilisateur_id,))
+    conn.commit()
+    conn.close()
+    return '', 204
+
+
+@app.route('/api/utilisateurs/<int:utilisateur_id>/liberer', methods=['DELETE'])
+@authentification_requise(['moderateur'])
+def liberer_identifiant(utilisateur_id):
+    """Supprime réellement un compte orphelin (sans chauffeur associé), pour libérer son identifiant.
+    Refuse la suppression si un chauffeur est encore relié, pour ne jamais perdre de données réelles."""
+    conn = get_connection()
+    chauffeur_lie = conn.execute('SELECT id FROM chauffeurs WHERE utilisateur_id = ?', (utilisateur_id,)).fetchone()
+    if chauffeur_lie:
+        conn.close()
+        return jsonify({'erreur': 'Ce compte est encore relié à un chauffeur — supprimez plutôt le chauffeur, ou désactivez le compte.'}), 409
+    conn.execute('DELETE FROM utilisateurs WHERE id = ?', (utilisateur_id,))
     conn.commit()
     conn.close()
     return '', 204
