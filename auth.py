@@ -8,7 +8,7 @@ from database import get_connection
 # (ex. générée avec `python3 -c "import secrets; print(secrets.token_hex(32))"`).
 # Sans cette variable, une clé de secours est utilisée — à ne JAMAIS garder telle quelle en ligne.
 SECRET_KEY = os.environ.get('SECRET_KEY', 'a-changer-en-production-avec-une-vraie-cle-secrete')
-TOKEN_MAX_AGE = 60 * 60 * 12  # 12 heures
+TOKEN_MAX_AGE = 60 * 60 * 24 * 60  # 60 jours — permet à l'app de "se souvenir" du chauffeur durablement
 
 serializer = URLSafeTimedSerializer(SECRET_KEY)
 
