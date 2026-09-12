@@ -137,11 +137,18 @@ def supprimer_chauffeur(chauffeur_id):
 @authentification_requise()
 def affecter_vehicule_chauffeur(chauffeur_id):
     donnees = request.get_json(force=True) or {}
+    champs, valeurs = [], []
+    if 'tracteur_id' in donnees:
+        champs.append('tracteur_id = ?')
+        valeurs.append(donnees['tracteur_id'])
+    if 'remorque_id' in donnees:
+        champs.append('remorque_id = ?')
+        valeurs.append(donnees['remorque_id'])
+    if not champs:
+        return jsonify({'erreur': 'Aucun champ à mettre à jour (tracteur_id ou remorque_id requis)'}), 400
+    valeurs.append(chauffeur_id)
     conn = get_connection()
-    conn.execute(
-        'UPDATE chauffeurs SET tracteur_id = ?, remorque_id = ? WHERE id = ?',
-        (donnees.get('tracteur_id'), donnees.get('remorque_id'), chauffeur_id)
-    )
+    conn.execute(f'UPDATE chauffeurs SET {", ".join(champs)} WHERE id = ?', valeurs)
     conn.commit()
     conn.close()
     return jsonify({'ok': True})
