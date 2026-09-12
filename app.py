@@ -640,6 +640,7 @@ def liste_pleins():
     conn = get_connection()
     tracteur_id = request.args.get('tracteur_id')
     chauffeur_id = request.args.get('chauffeur_id')
+    type_carburant = request.args.get('type_carburant')
     requete = '''SELECT p.*, t.immatriculation AS tracteur_immat, c.nom_complet AS chauffeur_nom
                  FROM pleins_carburant p
                  JOIN tracteurs t ON t.id = p.tracteur_id
@@ -651,6 +652,9 @@ def liste_pleins():
     if chauffeur_id:
         requete += ' AND p.chauffeur_id = ?'
         params.append(chauffeur_id)
+    if type_carburant:
+        requete += ' AND p.type_carburant = ?'
+        params.append(type_carburant)
     requete += ' ORDER BY p.date_plein DESC'
     lignes = conn.execute(requete, params).fetchall()
     conn.close()
@@ -681,6 +685,16 @@ def creer_plein():
     plein_id = curseur.lastrowid
     conn.close()
     return jsonify({'id': plein_id}), 201
+
+
+@app.route('/api/pleins/<int:plein_id>', methods=['DELETE'])
+@authentification_requise(['moderateur'])
+def supprimer_plein(plein_id):
+    conn = get_connection()
+    conn.execute('DELETE FROM pleins_carburant WHERE id = ?', (plein_id,))
+    conn.commit()
+    conn.close()
+    return '', 204
 
 
 @app.route('/api/pleins/ticpe', methods=['GET'])
