@@ -292,11 +292,19 @@ def liste_missions():
 
 
 @app.route('/api/missions', methods=['POST'])
-@authentification_requise(['moderateur'])
+@authentification_requise(['moderateur', 'chauffeur'])
 def creer_mission():
     donnees = request.get_json(force=True) or {}
-    requis = ['chauffeur_id', 'date_mission']
-    if not all(donnees.get(champ) for champ in requis):
+
+    chauffeur_id = donnees.get('chauffeur_id')
+    if g.user['role'] == 'chauffeur':
+        # Un chauffeur ne peut créer une mission QUE pour lui-même, jamais pour un autre
+        chauffeur = _chauffeur_id_du_token()
+        if not chauffeur:
+            return jsonify({'erreur': 'Fiche chauffeur introuvable'}), 404
+        chauffeur_id = chauffeur['id']
+
+    if not chauffeur_id or not donnees.get('date_mission'):
         return jsonify({'erreur': 'chauffeur_id et date_mission sont requis'}), 400
 
     conn = get_connection()
@@ -304,7 +312,7 @@ def creer_mission():
         INSERT INTO missions (chauffeur_id, date_mission, heure_depart, client, adresse, chef_de_chantier)
         VALUES (?, ?, ?, ?, ?, ?)
     ''', (
-        donnees['chauffeur_id'], donnees['date_mission'], donnees.get('heure_depart'),
+        chauffeur_id, donnees['date_mission'], donnees.get('heure_depart'),
         donnees.get('client'), donnees.get('adresse'), donnees.get('chef_de_chantier')
     ))
     conn.commit()
