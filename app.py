@@ -870,6 +870,12 @@ def modifier_mission(mission_id):
 @authentification_requise(['moderateur'])
 def supprimer_mission(mission_id):
     conn = get_connection()
+    # Supprime aussi la ligne de facturation associée, SAUF si elle a déjà un numéro de facture
+    # (dans ce cas, on la laisse : une facture déjà émise ne doit jamais disparaître silencieusement).
+    conn.execute(
+        'DELETE FROM facturation WHERE mission_id = ? AND numero_facture IS NULL',
+        (mission_id,)
+    )
     conn.execute('DELETE FROM missions WHERE id = ?', (mission_id,))
     conn.commit()
     conn.close()
