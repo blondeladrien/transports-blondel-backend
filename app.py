@@ -661,6 +661,17 @@ def liste_pleins():
     tracteur_id = request.args.get('tracteur_id')
     chauffeur_id = request.args.get('chauffeur_id')
     type_carburant = request.args.get('type_carburant')
+
+    if g.user['role'] == 'chauffeur':
+        # Un chauffeur ne voit JAMAIS les pleins d'un autre véhicule ou d'un autre chauffeur,
+        # même s'il tente de le demander via les paramètres — on force son propre tracteur.
+        chauffeur = _chauffeur_id_du_token()
+        if not chauffeur or not chauffeur['tracteur_id']:
+            conn.close()
+            return jsonify([])
+        tracteur_id = chauffeur['tracteur_id']
+        chauffeur_id = None
+
     requete = '''SELECT p.*, t.immatriculation AS tracteur_immat, c.nom_complet AS chauffeur_nom
                  FROM pleins_carburant p
                  JOIN tracteurs t ON t.id = p.tracteur_id
