@@ -1,13 +1,12 @@
-
 import os
 from flask import Flask, request, jsonify, g
 from werkzeug.security import generate_password_hash, check_password_hash
 from database import get_connection, init_db, seed_admin
 from auth import generer_token, authentification_requise
- 
+
 app = Flask(__name__)
- 
- 
+
+
 @app.after_request
 def ajouter_headers_cors(response):
     """Autorise les appels depuis les apps web/mobile (fichiers HTML séparés), sans dépendance externe.
@@ -17,40 +16,40 @@ def ajouter_headers_cors(response):
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
     response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PATCH, PUT, DELETE, OPTIONS'
     return response
- 
- 
+
+
 # ============================================================
 # AUTHENTIFICATION
 # ============================================================
- 
+
 @app.route('/api/auth/login', methods=['POST'])
 def login():
     donnees = request.get_json(force=True) or {}
     identifiant = donnees.get('identifiant', '').strip()
     mot_de_passe = donnees.get('mot_de_passe', '')
- 
+
     conn = get_connection()
     utilisateur = conn.execute(
         'SELECT * FROM utilisateurs WHERE LOWER(identifiant) = LOWER(?) AND actif = 1',
         (identifiant,)
     ).fetchone()
     conn.close()
- 
+
     if not utilisateur or not check_password_hash(utilisateur['mot_de_passe_hash'], mot_de_passe):
         return jsonify({'erreur': 'Identifiant ou mot de passe incorrect'}), 401
- 
+
     token = generer_token(utilisateur['id'], utilisateur['role'])
     return jsonify({
         'token': token,
         'role': utilisateur['role'],
         'utilisateur_id': utilisateur['id']
     })
- 
- 
+
+
 # ============================================================
 # CHAUFFEURS
 # ============================================================
- 
+
 @app.route('/api/chauffeurs', methods=['GET'])
 @authentification_requise()
 def liste_chauffeurs():
@@ -64,8 +63,8 @@ def liste_chauffeurs():
     ''').fetchall()
     conn.close()
     return jsonify([dict(l) for l in lignes])
- 
- 
+
+
 @app.route('/api/chauffeurs/me', methods=['GET'])
 @authentification_requise(['chauffeur'])
 def ma_fiche_chauffeur():
@@ -83,8 +82,8 @@ def ma_fiche_chauffeur():
     if not ligne:
         return jsonify({'erreur': 'Aucune fiche chauffeur associée à ce compte'}), 404
     return jsonify(dict(ligne))
- 
- 
+
+
 @app.route('/api/chauffeurs', methods=['POST'])
 @authentification_requise(['moderateur'])
 def creer_chauffeur():
@@ -92,10 +91,10 @@ def creer_chauffeur():
     nom = donnees.get('nom_complet', '').strip()
     if not nom:
         return jsonify({'erreur': 'Le nom complet est requis'}), 400
- 
+
     conn = get_connection()
     utilisateur_id = None
- 
+
     # Création optionnelle du compte mobile en même temps
     identifiant = donnees.get('identifiant', '').strip()
     mot_de_passe = donnees.get('mot_de_passe', '').strip()
@@ -109,7 +108,7 @@ def creer_chauffeur():
             (identifiant, generate_password_hash(mot_de_passe))
         )
         utilisateur_id = curseur.lastrowid
- 
+
     curseur = conn.execute(
         'INSERT INTO chauffeurs (utilisateur_id, nom_complet, telephone, numero_permis) VALUES (?, ?, ?, ?)',
         (utilisateur_id, nom, donnees.get('telephone'), donnees.get('numero_permis'))
@@ -118,8 +117,8 @@ def creer_chauffeur():
     chauffeur_id = curseur.lastrowid
     conn.close()
     return jsonify({'id': chauffeur_id, 'nom_complet': nom, 'utilisateur_id': utilisateur_id}), 201
- 
- 
+
+
 @app.route('/api/chauffeurs/<int:chauffeur_id>', methods=['DELETE'])
 @authentification_requise(['moderateur'])
 def supprimer_chauffeur(chauffeur_id):
@@ -132,8 +131,8 @@ def supprimer_chauffeur(chauffeur_id):
     conn.commit()
     conn.close()
     return '', 204
- 
- 
+
+
 @app.route('/api/chauffeurs/<int:chauffeur_id>/vehicule', methods=['PATCH'])
 @authentification_requise()
 def affecter_vehicule_chauffeur(chauffeur_id):
@@ -153,12 +152,12 @@ def affecter_vehicule_chauffeur(chauffeur_id):
     conn.commit()
     conn.close()
     return jsonify({'ok': True})
- 
- 
+
+
 # ============================================================
 # TRACTEURS ROUTIERS
 # ============================================================
- 
+
 @app.route('/api/tracteurs', methods=['GET'])
 @authentification_requise()
 def liste_tracteurs():
@@ -166,8 +165,8 @@ def liste_tracteurs():
     lignes = conn.execute('SELECT * FROM tracteurs ORDER BY immatriculation').fetchall()
     conn.close()
     return jsonify([dict(l) for l in lignes])
- 
- 
+
+
 @app.route('/api/tracteurs', methods=['POST'])
 @authentification_requise(['moderateur'])
 def creer_tracteur():
@@ -175,7 +174,7 @@ def creer_tracteur():
     immat = donnees.get('immatriculation', '').strip()
     if not immat:
         return jsonify({'erreur': "L'immatriculation est requise"}), 400
- 
+
     conn = get_connection()
     try:
         curseur = conn.execute(
@@ -189,8 +188,8 @@ def creer_tracteur():
         return jsonify({'erreur': 'Cette immatriculation existe déjà'}), 409
     conn.close()
     return jsonify({'id': tracteur_id, 'immatriculation': immat}), 201
- 
- 
+
+
 @app.route('/api/tracteurs/<int:tracteur_id>', methods=['DELETE'])
 @authentification_requise(['moderateur'])
 def supprimer_tracteur(tracteur_id):
@@ -199,12 +198,12 @@ def supprimer_tracteur(tracteur_id):
     conn.commit()
     conn.close()
     return '', 204
- 
- 
+
+
 # ============================================================
 # REMORQUES
 # ============================================================
- 
+
 @app.route('/api/remorques', methods=['GET'])
 @authentification_requise()
 def liste_remorques():
@@ -216,8 +215,8 @@ def liste_remorques():
     ''').fetchall()
     conn.close()
     return jsonify([dict(l) for l in lignes])
- 
- 
+
+
 @app.route('/api/remorques', methods=['POST'])
 @authentification_requise(['moderateur'])
 def creer_remorque():
@@ -225,7 +224,7 @@ def creer_remorque():
     immat = donnees.get('immatriculation', '').strip()
     if not immat:
         return jsonify({'erreur': "L'immatriculation est requise"}), 400
- 
+
     conn = get_connection()
     try:
         curseur = conn.execute(
@@ -239,8 +238,8 @@ def creer_remorque():
         return jsonify({'erreur': 'Cette immatriculation existe déjà'}), 409
     conn.close()
     return jsonify({'id': remorque_id, 'immatriculation': immat}), 201
- 
- 
+
+
 @app.route('/api/remorques/<int:remorque_id>', methods=['DELETE'])
 @authentification_requise(['moderateur'])
 def supprimer_remorque(remorque_id):
@@ -249,12 +248,12 @@ def supprimer_remorque(remorque_id):
     conn.commit()
     conn.close()
     return '', 204
- 
- 
+
+
 # ============================================================
 # MISSIONS
 # ============================================================
- 
+
 @app.route('/api/missions', methods=['GET'])
 @authentification_requise()
 def liste_missions():
@@ -290,8 +289,8 @@ def liste_missions():
         lignes = conn.execute(requete, params).fetchall()
     conn.close()
     return jsonify([dict(l) for l in lignes])
- 
- 
+
+
 @app.route('/api/missions', methods=['POST'])
 @authentification_requise(['moderateur'])
 def creer_mission():
@@ -299,7 +298,7 @@ def creer_mission():
     requis = ['chauffeur_id', 'date_mission']
     if not all(donnees.get(champ) for champ in requis):
         return jsonify({'erreur': 'chauffeur_id et date_mission sont requis'}), 400
- 
+
     conn = get_connection()
     curseur = conn.execute('''
         INSERT INTO missions (chauffeur_id, date_mission, heure_depart, client, adresse, chef_de_chantier)
@@ -312,8 +311,8 @@ def creer_mission():
     mission_id = curseur.lastrowid
     conn.close()
     return jsonify({'id': mission_id}), 201
- 
- 
+
+
 @app.route('/api/missions/<int:mission_id>/accepter', methods=['PATCH'])
 @authentification_requise(['chauffeur'])
 def accepter_mission(mission_id):
@@ -325,8 +324,8 @@ def accepter_mission(mission_id):
     conn.commit()
     conn.close()
     return jsonify({'ok': True})
- 
- 
+
+
 @app.route('/api/missions/<int:mission_id>/valider', methods=['PATCH'])
 @authentification_requise(['chauffeur', 'moderateur'])
 def valider_mission(mission_id):
@@ -339,7 +338,7 @@ def valider_mission(mission_id):
         WHERE id = ?
     ''', (donnees.get('nombre_tours'), donnees.get('remarque'), mission_id))
     conn.commit()
- 
+
     # Création automatique de la ligne de facturation correspondante
     mission = conn.execute('SELECT * FROM missions WHERE id = ?', (mission_id,)).fetchone()
     facturation_id = None
@@ -356,12 +355,12 @@ def valider_mission(mission_id):
     conn.commit()
     conn.close()
     return jsonify({'ok': True, 'facturation_id': facturation_id})
- 
- 
+
+
 # ============================================================
 # FACTURATION
 # ============================================================
- 
+
 @app.route('/api/facturation', methods=['GET'])
 @authentification_requise(['moderateur'])
 def liste_facturation():
@@ -373,8 +372,8 @@ def liste_facturation():
     ''').fetchall()
     conn.close()
     return jsonify([dict(l) for l in lignes])
- 
- 
+
+
 @app.route('/api/facturation/<int:ligne_id>', methods=['PATCH'])
 @authentification_requise(['moderateur'])
 def facturer_ligne(ligne_id):
@@ -387,8 +386,8 @@ def facturer_ligne(ligne_id):
     conn.commit()
     conn.close()
     return jsonify({'ok': True})
- 
- 
+
+
 @app.route('/api/facturation/<int:ligne_id>', methods=['DELETE'])
 @authentification_requise(['moderateur'])
 def supprimer_facturation(ligne_id):
@@ -397,12 +396,12 @@ def supprimer_facturation(ligne_id):
     conn.commit()
     conn.close()
     return '', 204
- 
- 
+
+
 # ============================================================
 # DÉCLARATIONS DE JOURNÉE (prise de service, km départ/arrivée)
 # ============================================================
- 
+
 def _chauffeur_id_du_token():
     """Retrouve l'id de la fiche chauffeur correspondant à l'utilisateur connecté."""
     conn = get_connection()
@@ -411,8 +410,8 @@ def _chauffeur_id_du_token():
     ).fetchone()
     conn.close()
     return ligne
- 
- 
+
+
 @app.route('/api/declarations', methods=['GET'])
 @authentification_requise()
 def liste_declarations():
@@ -420,11 +419,11 @@ def liste_declarations():
     conn = get_connection()
     chauffeur_id = request.args.get('chauffeur_id')
     mois = request.args.get('mois')
- 
+
     if g.user['role'] == 'chauffeur':
         c = _chauffeur_id_du_token()
         chauffeur_id = c['id'] if c else 0
- 
+
     requete = '''
         SELECT d.*, t.immatriculation AS tracteur_immat
         FROM declarations_journee d LEFT JOIN tracteurs t ON t.id = d.tracteur_id
@@ -441,8 +440,8 @@ def liste_declarations():
     lignes = conn.execute(requete, params).fetchall()
     conn.close()
     return jsonify([dict(l) for l in lignes])
- 
- 
+
+
 @app.route('/api/declarations/aujourdhui', methods=['GET'])
 @authentification_requise(['chauffeur'])
 def declaration_du_jour():
@@ -452,15 +451,15 @@ def declaration_du_jour():
     chauffeur = _chauffeur_id_du_token()
     if not chauffeur:
         return jsonify({'erreur': 'Fiche chauffeur introuvable'}), 404
- 
+
     conn = get_connection()
     aujourdhui = request.args.get('date') or __import__('datetime').date.today().isoformat()
- 
+
     existante = conn.execute(
         'SELECT * FROM declarations_journee WHERE chauffeur_id = ? AND date_jour = ?',
         (chauffeur['id'], aujourdhui)
     ).fetchone()
- 
+
     km_depart_suggere = None
     if not existante or not existante['km_depart']:
         derniere = conn.execute('''
@@ -470,14 +469,14 @@ def declaration_du_jour():
         ''', (chauffeur['id'], aujourdhui)).fetchone()
         if derniere and derniere['tracteur_id'] == chauffeur['tracteur_id']:
             km_depart_suggere = derniere['km_arrivee']
- 
+
     conn.close()
     return jsonify({
         'declaration': dict(existante) if existante else None,
         'km_depart_suggere': km_depart_suggere
     })
- 
- 
+
+
 @app.route('/api/declarations/km-depart', methods=['POST'])
 @authentification_requise(['chauffeur'])
 def declarer_km_depart():
@@ -486,7 +485,7 @@ def declarer_km_depart():
         return jsonify({'erreur': 'Fiche chauffeur introuvable'}), 404
     donnees = request.get_json(force=True) or {}
     aujourdhui = donnees.get('date') or __import__('datetime').date.today().isoformat()
- 
+
     conn = get_connection()
     conn.execute('''
         INSERT INTO declarations_journee (chauffeur_id, date_jour, km_depart, tracteur_id, heure_prise_service)
@@ -498,8 +497,8 @@ def declarer_km_depart():
     conn.commit()
     conn.close()
     return jsonify({'ok': True})
- 
- 
+
+
 @app.route('/api/declarations/km-arrivee', methods=['POST'])
 @authentification_requise(['chauffeur'])
 def declarer_km_arrivee():
@@ -508,7 +507,7 @@ def declarer_km_arrivee():
         return jsonify({'erreur': 'Fiche chauffeur introuvable'}), 404
     donnees = request.get_json(force=True) or {}
     aujourdhui = donnees.get('date') or __import__('datetime').date.today().isoformat()
- 
+
     conn = get_connection()
     conn.execute('''
         UPDATE declarations_journee
@@ -518,18 +517,18 @@ def declarer_km_arrivee():
     conn.commit()
     conn.close()
     return jsonify({'ok': True})
- 
- 
+
+
 # ============================================================
 # INDEMNITÉS (frais de route)
 # ============================================================
- 
+
 TARIFS_INDEMNITES = {
     'casse_croute': 8.87, 'repas_nuit': 9.81, 'repas': 16.36,
     'petit_decouche': 52.31, 'grand_decouche': 68.67
 }
- 
- 
+
+
 @app.route('/api/indemnites', methods=['GET'])
 @authentification_requise()
 def liste_indemnites():
@@ -552,7 +551,7 @@ def liste_indemnites():
         params.append(f'{mois}%')
     lignes = conn.execute(requete, params).fetchall()
     conn.close()
- 
+
     resultat = []
     for l in lignes:
         d = dict(l)
@@ -560,8 +559,8 @@ def liste_indemnites():
         d['total'] = round(total, 2)
         resultat.append(d)
     return jsonify(resultat)
- 
- 
+
+
 @app.route('/api/indemnites', methods=['POST'])
 @authentification_requise(['chauffeur'])
 def declarer_indemnites():
@@ -570,7 +569,7 @@ def declarer_indemnites():
         return jsonify({'erreur': 'Fiche chauffeur introuvable'}), 404
     donnees = request.get_json(force=True) or {}
     aujourdhui = donnees.get('date') or __import__('datetime').date.today().isoformat()
- 
+
     conn = get_connection()
     conn.execute('''
         INSERT INTO indemnites (chauffeur_id, date_jour, casse_croute, repas_nuit, repas, petit_decouche, grand_decouche, commentaire)
@@ -586,12 +585,12 @@ def declarer_indemnites():
     conn.commit()
     conn.close()
     return jsonify({'ok': True})
- 
- 
+
+
 # ============================================================
 # ACHATS (pro / perso)
 # ============================================================
- 
+
 @app.route('/api/achats', methods=['GET'])
 @authentification_requise()
 def liste_achats():
@@ -616,8 +615,8 @@ def liste_achats():
     lignes = conn.execute(requete, params).fetchall()
     conn.close()
     return jsonify([dict(l) for l in lignes])
- 
- 
+
+
 @app.route('/api/achats', methods=['POST'])
 @authentification_requise(['chauffeur'])
 def declarer_achat():
@@ -627,7 +626,7 @@ def declarer_achat():
     donnees = request.get_json(force=True) or {}
     if donnees.get('type') not in ('pro', 'perso') or not donnees.get('montant'):
         return jsonify({'erreur': 'type (pro/perso) et montant sont requis'}), 400
- 
+
     conn = get_connection()
     curseur = conn.execute('''
         INSERT INTO achats (chauffeur_id, type, date_achat, description, montant)
@@ -641,12 +640,12 @@ def declarer_achat():
     achat_id = curseur.lastrowid
     conn.close()
     return jsonify({'id': achat_id}), 201
- 
- 
+
+
 # ============================================================
 # PLEINS DE CARBURANT + TICPE
 # ============================================================
- 
+
 @app.route('/api/pleins', methods=['GET'])
 @authentification_requise()
 def liste_pleins():
@@ -672,20 +671,20 @@ def liste_pleins():
     lignes = conn.execute(requete, params).fetchall()
     conn.close()
     return jsonify([dict(l) for l in lignes])
- 
- 
+
+
 @app.route('/api/pleins', methods=['POST'])
 @authentification_requise()
 def creer_plein():
     donnees = request.get_json(force=True) or {}
     if not donnees.get('tracteur_id') or not donnees.get('date_plein'):
         return jsonify({'erreur': 'tracteur_id et date_plein sont requis'}), 400
- 
+
     chauffeur_id = donnees.get('chauffeur_id')
     if g.user['role'] == 'chauffeur' and not chauffeur_id:
         c = _chauffeur_id_du_token()
         chauffeur_id = c['id'] if c else None
- 
+
     conn = get_connection()
     curseur = conn.execute('''
         INSERT INTO pleins_carburant (tracteur_id, chauffeur_id, type_carburant, date_plein, kilometrage, litres, prix_total)
@@ -698,8 +697,8 @@ def creer_plein():
     plein_id = curseur.lastrowid
     conn.close()
     return jsonify({'id': plein_id}), 201
- 
- 
+
+
 @app.route('/api/pleins/<int:plein_id>', methods=['DELETE'])
 @authentification_requise(['moderateur'])
 def supprimer_plein(plein_id):
@@ -708,8 +707,8 @@ def supprimer_plein(plein_id):
     conn.commit()
     conn.close()
     return '', 204
- 
- 
+
+
 @app.route('/api/pleins/ticpe', methods=['GET'])
 @authentification_requise(['moderateur'])
 def ticpe_litrage():
@@ -725,12 +724,12 @@ def ticpe_litrage():
     ''', (annee,)).fetchall()
     conn.close()
     return jsonify([dict(l) for l in lignes])
- 
- 
+
+
 # ============================================================
 # DOCUMENTS (chauffeurs et véhicules)
 # ============================================================
- 
+
 @app.route('/api/documents/chauffeurs/<int:chauffeur_id>', methods=['PUT'])
 @authentification_requise(['moderateur'])
 def enregistrer_documents_chauffeur(chauffeur_id):
@@ -749,8 +748,8 @@ def enregistrer_documents_chauffeur(chauffeur_id):
     conn.commit()
     conn.close()
     return jsonify({'ok': True})
- 
- 
+
+
 @app.route('/api/documents/chauffeurs', methods=['GET'])
 @authentification_requise(['moderateur'])
 def liste_documents_chauffeurs():
@@ -761,8 +760,8 @@ def liste_documents_chauffeurs():
     ''').fetchall()
     conn.close()
     return jsonify([dict(l) for l in lignes])
- 
- 
+
+
 @app.route('/api/documents/chauffeurs/me', methods=['GET'])
 @authentification_requise(['chauffeur'])
 def mes_documents_chauffeur():
@@ -776,8 +775,8 @@ def mes_documents_chauffeur():
     ).fetchone()
     conn.close()
     return jsonify(dict(ligne) if ligne else {})
- 
- 
+
+
 @app.route('/api/documents/tracteurs/<int:tracteur_id>', methods=['PUT'])
 @authentification_requise(['moderateur'])
 def enregistrer_documents_tracteur(tracteur_id):
@@ -795,12 +794,12 @@ def enregistrer_documents_tracteur(tracteur_id):
     conn.commit()
     conn.close()
     return jsonify({'ok': True})
- 
- 
+
+
 # ============================================================
 # HISTORIQUE (vue combinée : missions + frais)
 # ============================================================
- 
+
 @app.route('/api/historique', methods=['GET'])
 @authentification_requise(['moderateur'])
 def historique():
@@ -819,12 +818,12 @@ def historique():
     combine = [dict(l) for l in missions] + [dict(l) for l in frais]
     combine.sort(key=lambda x: x['date'], reverse=True)
     return jsonify(combine)
- 
- 
+
+
 # ============================================================
 # MISES À JOUR FINES (kilométrage, rendez-vous de contrôle technique)
 # ============================================================
- 
+
 @app.route('/api/tracteurs/<int:tracteur_id>', methods=['PATCH'])
 @authentification_requise(['moderateur'])
 def modifier_tracteur(tracteur_id):
@@ -836,15 +835,15 @@ def modifier_tracteur(tracteur_id):
     a_modifier = {k: v for k, v in donnees.items() if k in champs_autorises}
     if not a_modifier:
         return jsonify({'erreur': 'Aucun champ valide à modifier'}), 400
- 
+
     conn = get_connection()
     assignations = ', '.join(f'{champ} = ?' for champ in a_modifier)
     conn.execute(f'UPDATE tracteurs SET {assignations} WHERE id = ?', (*a_modifier.values(), tracteur_id))
     conn.commit()
     conn.close()
     return jsonify({'ok': True})
- 
- 
+
+
 @app.route('/api/remorques/<int:remorque_id>', methods=['PATCH'])
 @authentification_requise(['moderateur'])
 def modifier_remorque(remorque_id):
@@ -853,15 +852,15 @@ def modifier_remorque(remorque_id):
     a_modifier = {k: v for k, v in donnees.items() if k in champs_autorises}
     if not a_modifier:
         return jsonify({'erreur': 'Aucun champ valide à modifier'}), 400
- 
+
     conn = get_connection()
     assignations = ', '.join(f'{champ} = ?' for champ in a_modifier)
     conn.execute(f'UPDATE remorques SET {assignations} WHERE id = ?', (*a_modifier.values(), remorque_id))
     conn.commit()
     conn.close()
     return jsonify({'ok': True})
- 
- 
+
+
 @app.route('/api/missions/<int:mission_id>', methods=['PATCH'])
 @authentification_requise(['moderateur'])
 def modifier_mission(mission_id):
@@ -870,15 +869,15 @@ def modifier_mission(mission_id):
     a_modifier = {k: v for k, v in donnees.items() if k in champs_autorises}
     if not a_modifier:
         return jsonify({'erreur': 'Aucun champ valide à modifier'}), 400
- 
+
     conn = get_connection()
     assignations = ', '.join(f'{champ} = ?' for champ in a_modifier)
     conn.execute(f'UPDATE missions SET {assignations} WHERE id = ?', (*a_modifier.values(), mission_id))
     conn.commit()
     conn.close()
     return jsonify({'ok': True})
- 
- 
+
+
 @app.route('/api/missions/<int:mission_id>', methods=['DELETE'])
 @authentification_requise(['moderateur'])
 def supprimer_mission(mission_id):
@@ -893,8 +892,8 @@ def supprimer_mission(mission_id):
     conn.commit()
     conn.close()
     return '', 204
- 
- 
+
+
 @app.route('/api/utilisateurs/<int:utilisateur_id>/mot-de-passe', methods=['PATCH'])
 @authentification_requise(['moderateur'])
 def reinitialiser_mot_de_passe(utilisateur_id):
@@ -910,8 +909,8 @@ def reinitialiser_mot_de_passe(utilisateur_id):
     conn.commit()
     conn.close()
     return jsonify({'ok': True})
- 
- 
+
+
 @app.route('/api/utilisateurs/<int:utilisateur_id>', methods=['DELETE'])
 @authentification_requise(['moderateur'])
 def desactiver_compte(utilisateur_id):
@@ -921,8 +920,8 @@ def desactiver_compte(utilisateur_id):
     conn.commit()
     conn.close()
     return '', 204
- 
- 
+
+
 @app.route('/api/utilisateurs/<int:utilisateur_id>/liberer', methods=['DELETE'])
 @authentification_requise(['moderateur'])
 def liberer_identifiant(utilisateur_id):
@@ -937,8 +936,8 @@ def liberer_identifiant(utilisateur_id):
     conn.commit()
     conn.close()
     return '', 204
- 
- 
+
+
 @app.route('/api/utilisateurs', methods=['GET'])
 @authentification_requise(['moderateur'])
 def liste_comptes_mobiles():
@@ -951,8 +950,8 @@ def liste_comptes_mobiles():
     ''').fetchall()
     conn.close()
     return jsonify([dict(l) for l in lignes])
- 
- 
+
+
 @app.route('/api/chauffeurs/<int:chauffeur_id>/compte-mobile', methods=['POST'])
 @authentification_requise(['moderateur'])
 def creer_compte_mobile_pour_chauffeur(chauffeur_id):
@@ -961,7 +960,7 @@ def creer_compte_mobile_pour_chauffeur(chauffeur_id):
     mot_de_passe = donnees.get('mot_de_passe', '').strip()
     if not identifiant or not mot_de_passe:
         return jsonify({'erreur': 'identifiant et mot_de_passe sont requis'}), 400
- 
+
     conn = get_connection()
     chauffeur = conn.execute('SELECT * FROM chauffeurs WHERE id = ?', (chauffeur_id,)).fetchone()
     if not chauffeur:
@@ -970,7 +969,7 @@ def creer_compte_mobile_pour_chauffeur(chauffeur_id):
     if conn.execute('SELECT id FROM utilisateurs WHERE identifiant = ?', (identifiant,)).fetchone():
         conn.close()
         return jsonify({'erreur': 'Cet identifiant est déjà utilisé'}), 409
- 
+
     curseur = conn.execute(
         "INSERT INTO utilisateurs (identifiant, mot_de_passe_hash, role) VALUES (?, ?, 'chauffeur')",
         (identifiant, generate_password_hash(mot_de_passe))
@@ -980,8 +979,8 @@ def creer_compte_mobile_pour_chauffeur(chauffeur_id):
     conn.commit()
     conn.close()
     return jsonify({'utilisateur_id': utilisateur_id}), 201
- 
- 
+
+
 @app.route('/api/chauffeurs/me', methods=['GET'])
 @authentification_requise(['chauffeur'])
 def mon_profil_chauffeur():
@@ -998,8 +997,8 @@ def mon_profil_chauffeur():
     if not chauffeur:
         return jsonify({'erreur': 'Fiche chauffeur introuvable pour ce compte'}), 404
     return jsonify(dict(chauffeur))
- 
- 
+
+
 @app.route('/api/me', methods=['GET'])
 @authentification_requise()
 def mon_profil():
@@ -1021,25 +1020,24 @@ def mon_profil():
         utilisateur = conn.execute('SELECT id, identifiant, role FROM utilisateurs WHERE id = ?', (g.user['utilisateur_id'],)).fetchone()
         conn.close()
         return jsonify({'role': 'moderateur', **dict(utilisateur)})
- 
- 
+
+
 # ============================================================
 # SANTÉ DE L'API
 # ============================================================
- 
+
 @app.route('/api/health', methods=['GET'])
 def health():
     return jsonify({'statut': 'ok', 'service': 'Transports A.Blondel API'})
- 
- 
+
+
 # Initialise la base au chargement du module, pour que ça fonctionne aussi
 # quand l'app est lancée par gunicorn (production) et pas seulement par
 # `python3 app.py` (local) — gunicorn n'exécute jamais le bloc __main__ ci-dessous.
 init_db()
 seed_admin()
- 
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5050))
     debug = os.environ.get('FLASK_DEBUG', 'true').lower() == 'true'
     app.run(host='0.0.0.0', port=port, debug=debug)
- 
