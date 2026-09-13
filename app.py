@@ -605,6 +605,19 @@ def declarer_indemnites():
     return jsonify({'ok': True})
 
 
+@app.route('/api/cloture-jour/<int:chauffeur_id>/<date_jour>', methods=['DELETE'])
+@authentification_requise(['moderateur'])
+def supprimer_cloture_jour(chauffeur_id, date_jour):
+    """Supprime la ligne complète d'une journée pour un chauffeur : sa déclaration
+    (kilométrage départ/arrivée) ET ses indemnités de ce jour, ensemble."""
+    conn = get_connection()
+    conn.execute('DELETE FROM declarations_journee WHERE chauffeur_id = ? AND date_jour = ?', (chauffeur_id, date_jour))
+    conn.execute('DELETE FROM indemnites WHERE chauffeur_id = ? AND date_jour = ?', (chauffeur_id, date_jour))
+    conn.commit()
+    conn.close()
+    return '', 204
+
+
 # ============================================================
 # ACHATS (pro / perso)
 # ============================================================
@@ -834,13 +847,13 @@ def enregistrer_documents_tracteur(tracteur_id):
 def historique():
     conn = get_connection()
     missions = conn.execute('''
-        SELECT 'mission' AS type, m.date_mission AS date, c.nom_complet AS chauffeur,
-               m.client AS detail, m.statut AS info
+        SELECT 'mission' AS type, m.id AS id, m.chauffeur_id AS chauffeur_id, m.date_mission AS date,
+               c.nom_complet AS chauffeur, m.client AS detail, m.statut AS info
         FROM missions m JOIN chauffeurs c ON c.id = m.chauffeur_id
     ''').fetchall()
     frais = conn.execute('''
-        SELECT 'frais' AS type, i.date_jour AS date, c.nom_complet AS chauffeur,
-               'Indemnités' AS detail, '' AS info
+        SELECT 'frais' AS type, i.id AS id, i.chauffeur_id AS chauffeur_id, i.date_jour AS date,
+               c.nom_complet AS chauffeur, 'Indemnités' AS detail, '' AS info
         FROM indemnites i JOIN chauffeurs c ON c.id = i.chauffeur_id
     ''').fetchall()
     conn.close()
