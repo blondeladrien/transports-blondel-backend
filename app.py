@@ -515,13 +515,23 @@ def declarer_km_arrivee():
         return jsonify({'erreur': 'Fiche chauffeur introuvable'}), 404
     donnees = request.get_json(force=True) or {}
     aujourdhui = donnees.get('date') or __import__('datetime').date.today().isoformat()
+    km_arrivee = donnees.get('km_arrivee')
 
     conn = get_connection()
     conn.execute('''
         UPDATE declarations_journee
         SET km_arrivee = ?, heure_fin_service = time('now')
         WHERE chauffeur_id = ? AND date_jour = ?
-    ''', (donnees.get('km_arrivee'), chauffeur['id'], aujourdhui))
+    ''', (km_arrivee, chauffeur['id'], aujourdhui))
+
+    # Répercute ce kilométrage sur la fiche du véhicule attitré, dans l'onglet Véhicules du dashboard —
+    # seulement s'il progresse (jamais en arrière, pour ne pas écraser une valeur juste avec une erreur).
+    if chauffeur['tracteur_id'] and km_arrivee is not None:
+        conn.execute('''
+            UPDATE tracteurs SET kilometrage = ?
+            WHERE id = ? AND (kilometrage IS NULL OR kilometrage < ?)
+        ''', (km_arrivee, chauffeur['tracteur_id'], km_arrivee))
+
     conn.commit()
     conn.close()
     return jsonify({'ok': True})
