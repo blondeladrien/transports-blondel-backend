@@ -23,6 +23,9 @@ CREATE TABLE IF NOT EXISTS chauffeurs (
     numero_permis TEXT,
     tracteur_id INTEGER REFERENCES tracteurs(id) ON DELETE SET NULL,
     remorque_id INTEGER REFERENCES remorques(id) ON DELETE SET NULL,
+    tracteur_attitre_id INTEGER REFERENCES tracteurs(id) ON DELETE SET NULL,
+    remorque_attitree_id INTEGER REFERENCES remorques(id) ON DELETE SET NULL,
+    derniere_utilisation TEXT,
     cree_le TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
