@@ -65,25 +65,6 @@ def liste_chauffeurs():
     return jsonify([dict(l) for l in lignes])
 
 
-@app.route('/api/chauffeurs/me', methods=['GET'])
-@authentification_requise(['chauffeur'])
-def ma_fiche_chauffeur():
-    """Renvoie la fiche du chauffeur actuellement connecté — évite toute ambiguïté
-    si plusieurs chauffeurs existent (contrairement à /api/chauffeurs qui liste tout le monde)."""
-    conn = get_connection()
-    ligne = conn.execute('''
-        SELECT c.*, t.immatriculation AS tracteur_immat, r.immatriculation AS remorque_immat
-        FROM chauffeurs c
-        LEFT JOIN tracteurs t ON t.id = c.tracteur_id
-        LEFT JOIN remorques r ON r.id = c.remorque_id
-        WHERE c.utilisateur_id = ?
-    ''', (g.user['utilisateur_id'],)).fetchone()
-    conn.close()
-    if not ligne:
-        return jsonify({'erreur': 'Aucune fiche chauffeur associée à ce compte'}), 404
-    return jsonify(dict(ligne))
-
-
 @app.route('/api/chauffeurs', methods=['POST'])
 @authentification_requise(['moderateur'])
 def creer_chauffeur():
@@ -138,12 +119,22 @@ def supprimer_chauffeur(chauffeur_id):
 def affecter_vehicule_chauffeur(chauffeur_id):
     donnees = request.get_json(force=True) or {}
     champs, valeurs = [], []
+    # Le modérateur définit le véhicule ATTITRÉ (permanent) ; un chauffeur qui change lui-même
+    # de véhicule ne modifie que celui du JOUR — son véhicule attitré n'est jamais touché, et
+    # lui sera reproposé automatiquement dès sa prochaine clôture (voir declarer_km_arrivee).
+    est_moderateur = g.user['role'] == 'moderateur'
     if 'tracteur_id' in donnees:
         champs.append('tracteur_id = ?')
         valeurs.append(donnees['tracteur_id'])
+        if est_moderateur:
+            champs.append('tracteur_attitre_id = ?')
+            valeurs.append(donnees['tracteur_id'])
     if 'remorque_id' in donnees:
         champs.append('remorque_id = ?')
         valeurs.append(donnees['remorque_id'])
+        if est_moderateur:
+            champs.append('remorque_attitree_id = ?')
+            valeurs.append(donnees['remorque_id'])
     if not champs:
         return jsonify({'erreur': 'Aucun champ à mettre à jour (tracteur_id ou remorque_id requis)'}), 400
     valeurs.append(chauffeur_id)
@@ -529,6 +520,14 @@ def declarer_km_arrivee():
             UPDATE tracteurs SET kilometrage = ?
             WHERE id = ? AND (kilometrage IS NULL OR kilometrage < ?)
         ''', (km_arrivee, chauffeur['tracteur_id'], km_arrivee))
+
+    # Le véhicule redevient immédiatement disponible : le chauffeur retrouve son véhicule attitré
+    # dès sa clôture, sans jamais attendre le passage à minuit. Ça évite tout croisement quand un
+    # véhicule change de chauffeur en cours de service (ex. relève à 18h, fin à 3h le lendemain).
+    conn.execute(
+        'UPDATE chauffeurs SET tracteur_id = tracteur_attitre_id, remorque_id = remorque_attitree_id WHERE id = ?',
+        (chauffeur['id'],)
+    )
 
     conn.commit()
     conn.close()
