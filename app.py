@@ -453,9 +453,9 @@ def liste_declarations():
 @app.route('/api/declarations/aujourdhui', methods=['GET'])
 @authentification_requise(['chauffeur'])
 def declaration_du_jour():
-    """Renvoie la déclaration du jour, et propose comme km de départ celui de la DERNIÈRE
-    clôture enregistrée (peu importe le nombre de jours écoulés depuis), à condition que
-    le tracteur n'ait pas changé entre-temps."""
+    """Renvoie la déclaration du jour, et propose comme km de départ le kilométrage ACTUEL DU
+    VÉHICULE lui-même (mis à jour à chaque clôture, quel que soit le chauffeur) — pas l'historique
+    personnel du chauffeur connecté, qui casserait la suggestion dès qu'un véhicule change de main."""
     chauffeur = _chauffeur_id_du_token()
     if not chauffeur:
         return jsonify({'erreur': 'Fiche chauffeur introuvable'}), 404
@@ -469,14 +469,12 @@ def declaration_du_jour():
     ).fetchone()
 
     km_depart_suggere = None
-    if not existante or not existante['km_depart']:
-        derniere = conn.execute('''
-            SELECT km_arrivee, tracteur_id FROM declarations_journee
-            WHERE chauffeur_id = ? AND date_jour < ? AND km_arrivee IS NOT NULL
-            ORDER BY date_jour DESC LIMIT 1
-        ''', (chauffeur['id'], aujourdhui)).fetchone()
-        if derniere and derniere['tracteur_id'] == chauffeur['tracteur_id']:
-            km_depart_suggere = derniere['km_arrivee']
+    if (not existante or not existante['km_depart']) and chauffeur['tracteur_id']:
+        tracteur = conn.execute(
+            'SELECT kilometrage FROM tracteurs WHERE id = ?', (chauffeur['tracteur_id'],)
+        ).fetchone()
+        if tracteur and tracteur['kilometrage']:
+            km_depart_suggere = tracteur['kilometrage']
 
     conn.close()
     return jsonify({
