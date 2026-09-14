@@ -17,12 +17,30 @@ def get_connection():
 
 
 def init_db():
-    """Crée les tables si elles n'existent pas encore."""
+    """Crée les tables si elles n'existent pas encore, et migre les bases déjà existantes
+    (ajout de colonnes sans jamais perdre les données déjà en place)."""
     conn = get_connection()
     with open(SCHEMA_PATH, 'r', encoding='utf-8') as f:
         conn.executescript(f.read())
     conn.commit()
+    _migrer_vehicule_attitre(conn)
     conn.close()
+
+
+def _migrer_vehicule_attitre(conn):
+    """Ajoute les colonnes de véhicule ATTITRÉ (permanent) si elles n'existent pas encore sur
+    une base déjà en production, et reprend l'attribution actuelle comme valeur de départ —
+    aucun chauffeur ne perd son véhicule du jour au lendemain à cause de cette migration."""
+    colonnes = {row['name'] for row in conn.execute("PRAGMA table_info(chauffeurs)").fetchall()}
+    if 'tracteur_attitre_id' not in colonnes:
+        conn.execute('ALTER TABLE chauffeurs ADD COLUMN tracteur_attitre_id INTEGER REFERENCES tracteurs(id) ON DELETE SET NULL')
+        conn.execute('UPDATE chauffeurs SET tracteur_attitre_id = tracteur_id')
+    if 'remorque_attitree_id' not in colonnes:
+        conn.execute('ALTER TABLE chauffeurs ADD COLUMN remorque_attitree_id INTEGER REFERENCES remorques(id) ON DELETE SET NULL')
+        conn.execute('UPDATE chauffeurs SET remorque_attitree_id = remorque_id')
+    if 'derniere_utilisation' not in colonnes:
+        conn.execute('ALTER TABLE chauffeurs ADD COLUMN derniere_utilisation TEXT')
+    conn.commit()
 
 
 def seed_admin(identifiant=None, mot_de_passe=None):
