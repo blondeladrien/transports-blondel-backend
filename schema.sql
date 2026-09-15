@@ -52,6 +52,10 @@ CREATE TABLE IF NOT EXISTS remorques (
     tracteur_id INTEGER REFERENCES tracteurs(id) ON DELETE SET NULL,
     date_controle_technique TEXT,
     date_rdv_controle_technique TEXT,
+    date_assurance TEXT,
+    date_extincteur TEXT,
+    date_chronotachygraphe TEXT,
+    date_tachylimiteur TEXT,
     cree_le TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -148,5 +152,6 @@ CREATE TABLE IF NOT EXISTS facturation (
     client TEXT NOT NULL,
     numero_facture TEXT,
     date_facturation TEXT,
+    note TEXT,
     cree_le TEXT NOT NULL DEFAULT (datetime('now'))
 );
