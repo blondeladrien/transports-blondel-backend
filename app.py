@@ -491,14 +491,15 @@ def declaration_du_jour():
 
 
 def _date_journee_ouverte(conn, chauffeur_id):
-    """Retrouve la date de la journée de travail EN COURS pour ce chauffeur : la plus récente
-    déclaration avec un kilométrage de départ renseigné. Indispensable pour les services de nuit
-    (ex. départ 22h, clôture 2h du matin le lendemain) : sans ça, le kilométrage d'arrivée et les
-    indemnités se retrouveraient enregistrés sous la mauvaise date après minuit. Fonctionne quel
-    que soit l'ordre d'envoi (kilométrage d'arrivée avant ou après les indemnités)."""
+    """Filet de sécurité côté serveur, utilisé seulement si le mobile n'a pas envoyé de date
+    explicite (l'app envoie normalement toujours la sienne désormais). Retrouve la journée de
+    travail EN COURS : celle où le kilométrage de départ est renseigné, mais pas encore celui
+    d'arrivée. Si aucune journée n'est ouverte (jamais démarrée, ou déjà entièrement close),
+    retombe sur la date d'aujourd'hui — jamais sur une ancienne journée déjà terminée, pour ne
+    pas écraser par erreur une clôture précédente."""
     ouverte = conn.execute('''
         SELECT date_jour FROM declarations_journee
-        WHERE chauffeur_id = ? AND km_depart IS NOT NULL
+        WHERE chauffeur_id = ? AND km_depart IS NOT NULL AND km_arrivee IS NULL
         ORDER BY date_jour DESC LIMIT 1
     ''', (chauffeur_id,)).fetchone()
     if ouverte:
