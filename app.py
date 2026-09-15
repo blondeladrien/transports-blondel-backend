@@ -384,6 +384,26 @@ def liste_facturation():
     return jsonify([dict(l) for l in lignes])
 
 
+@app.route('/api/facturation', methods=['POST'])
+@authentification_requise(['moderateur'])
+def creer_ligne_facturation():
+    """Crée manuellement une ligne de facturation, sans mission associée (bouton
+    « + Ajouter une ligne » du dashboard) — jusqu'ici cette action n'existait qu'en local dans
+    le navigateur, jamais réellement enregistrée en base, d'où sa disparition à la reconnexion."""
+    donnees = request.get_json(force=True) or {}
+    if not donnees.get('chauffeur_id') or not donnees.get('date_mission') or not donnees.get('client'):
+        return jsonify({'erreur': 'chauffeur_id, date_mission et client sont requis'}), 400
+    conn = get_connection()
+    curseur = conn.execute('''
+        INSERT INTO facturation (chauffeur_id, date_mission, client)
+        VALUES (?, ?, ?)
+    ''', (donnees['chauffeur_id'], donnees['date_mission'], donnees['client']))
+    conn.commit()
+    ligne_id = curseur.lastrowid
+    conn.close()
+    return jsonify({'id': ligne_id}), 201
+
+
 @app.route('/api/facturation/<int:ligne_id>', methods=['PATCH'])
 @authentification_requise(['moderateur'])
 def facturer_ligne(ligne_id):
