@@ -1,8 +1,19 @@
 import os
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 from flask import Flask, request, jsonify, g
 from werkzeug.security import generate_password_hash, check_password_hash
 from database import get_connection, init_db, seed_admin
 from auth import generer_token, authentification_requise
+
+FUSEAU_FR = ZoneInfo('Europe/Paris')
+
+
+def aujourdhui_fr():
+    """Date du jour en heure FRANÇAISE (et non UTC, le fuseau par défaut du serveur Render) —
+    indispensable pour que "minuit" corresponde bien à minuit vécu par les chauffeurs, pas à
+    minuit UTC qui tombe plusieurs heures plus tôt/tard selon la saison."""
+    return datetime.now(FUSEAU_FR).date().isoformat()
 
 app = Flask(__name__)
 
@@ -377,11 +388,16 @@ def liste_facturation():
 @authentification_requise(['moderateur'])
 def facturer_ligne(ligne_id):
     donnees = request.get_json(force=True) or {}
+    champs, valeurs = [], []
+    for champ in ('numero_facture', 'date_facturation', 'note'):
+        if champ in donnees:
+            champs.append(f'{champ} = ?')
+            valeurs.append(donnees[champ])
+    if not champs:
+        return jsonify({'erreur': 'Aucun champ à mettre à jour'}), 400
+    valeurs.append(ligne_id)
     conn = get_connection()
-    conn.execute(
-        'UPDATE facturation SET numero_facture = ?, date_facturation = ? WHERE id = ?',
-        (donnees.get('numero_facture'), donnees.get('date_facturation'), ligne_id)
-    )
+    conn.execute(f'UPDATE facturation SET {", ".join(champs)} WHERE id = ?', valeurs)
     conn.commit()
     conn.close()
     return jsonify({'ok': True})
@@ -452,7 +468,7 @@ def declaration_du_jour():
         return jsonify({'erreur': 'Fiche chauffeur introuvable'}), 404
 
     conn = get_connection()
-    aujourdhui = request.args.get('date') or __import__('datetime').date.today().isoformat()
+    aujourdhui = request.args.get('date') or aujourdhui_fr()
 
     existante = conn.execute(
         'SELECT * FROM declarations_journee WHERE chauffeur_id = ? AND date_jour = ?',
@@ -487,7 +503,7 @@ def _date_journee_ouverte(conn, chauffeur_id):
     ''', (chauffeur_id,)).fetchone()
     if ouverte:
         return ouverte['date_jour']
-    return __import__('datetime').date.today().isoformat()
+    return aujourdhui_fr()
 
 
 @app.route('/api/declarations/km-depart', methods=['POST'])
@@ -497,7 +513,7 @@ def declarer_km_depart():
     if not chauffeur:
         return jsonify({'erreur': 'Fiche chauffeur introuvable'}), 404
     donnees = request.get_json(force=True) or {}
-    aujourdhui = donnees.get('date') or __import__('datetime').date.today().isoformat()
+    aujourdhui = donnees.get('date') or aujourdhui_fr()
 
     conn = get_connection()
     conn.execute('''
@@ -523,11 +539,16 @@ def declarer_km_arrivee():
     aujourdhui = donnees.get('date') or _date_journee_ouverte(conn, chauffeur['id'])
     km_arrivee = donnees.get('km_arrivee')
 
+    # INSERT/UPDATE (pas seulement UPDATE) : si le chauffeur a oublié de renseigner son
+    # kilométrage de départ ce matin, la clôture du soir doit quand même fonctionner et créer
+    # la ligne du jour — un simple UPDATE échouerait silencieusement (0 ligne à mettre à jour).
     conn.execute('''
-        UPDATE declarations_journee
-        SET km_arrivee = ?, heure_fin_service = time('now')
-        WHERE chauffeur_id = ? AND date_jour = ?
-    ''', (km_arrivee, chauffeur['id'], aujourdhui))
+        INSERT INTO declarations_journee (chauffeur_id, date_jour, km_arrivee, tracteur_id, heure_fin_service)
+        VALUES (?, ?, ?, ?, time('now'))
+        ON CONFLICT(chauffeur_id, date_jour) DO UPDATE SET
+            km_arrivee = excluded.km_arrivee,
+            heure_fin_service = excluded.heure_fin_service
+    ''', (chauffeur['id'], aujourdhui, km_arrivee, chauffeur['tracteur_id']))
 
     # Répercute ce kilométrage sur la fiche du véhicule attitré, dans l'onglet Véhicules du dashboard —
     # seulement s'il progresse (jamais en arrière, pour ne pas écraser une valeur juste avec une erreur).
@@ -677,7 +698,7 @@ def declarer_achat():
         VALUES (?, ?, ?, ?, ?)
     ''', (
         chauffeur['id'], donnees['type'],
-        donnees.get('date_achat') or __import__('datetime').date.today().isoformat(),
+        donnees.get('date_achat') or aujourdhui_fr(),
         donnees.get('description'), float(donnees['montant'])
     ))
     conn.commit()
@@ -768,7 +789,7 @@ def supprimer_plein(plein_id):
 @authentification_requise(['moderateur'])
 def ticpe_litrage():
     """Litrage total par tracteur, groupé par mois (YYYY-MM), pour une année donnée."""
-    annee = request.args.get('annee', str(__import__('datetime').date.today().year))
+    annee = request.args.get('annee', str(datetime.now(FUSEAU_FR).year))
     conn = get_connection()
     lignes = conn.execute('''
         SELECT t.immatriculation, strftime('%m', p.date_plein) AS mois, SUM(p.litres) AS total_litres
