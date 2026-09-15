@@ -24,7 +24,29 @@ def init_db():
         conn.executescript(f.read())
     conn.commit()
     _migrer_vehicule_attitre(conn)
+    _migrer_note_facturation(conn)
+    _migrer_documents_remorques(conn)
     conn.close()
+
+
+def _migrer_documents_remorques(conn):
+    """Ajoute aux remorques les mêmes colonnes de documents que les tracteurs (assurance,
+    extincteur, chronotachygraphe, tachylimiteur) — absentes jusqu'ici, ce qui faisait que ces
+    dates semblaient s'enregistrer dans l'interface mais disparaissaient à chaque reconnexion,
+    faute d'un endroit où les sauvegarder réellement en base."""
+    colonnes = {row['name'] for row in conn.execute("PRAGMA table_info(remorques)").fetchall()}
+    for champ in ('date_assurance', 'date_extincteur', 'date_chronotachygraphe', 'date_tachylimiteur'):
+        if champ not in colonnes:
+            conn.execute(f'ALTER TABLE remorques ADD COLUMN {champ} TEXT')
+    conn.commit()
+
+
+def _migrer_note_facturation(conn):
+    """Ajoute la colonne note à la table facturation si elle n'existe pas encore."""
+    colonnes = {row['name'] for row in conn.execute("PRAGMA table_info(facturation)").fetchall()}
+    if 'note' not in colonnes:
+        conn.execute('ALTER TABLE facturation ADD COLUMN note TEXT')
+        conn.commit()
 
 
 def _migrer_vehicule_attitre(conn):
