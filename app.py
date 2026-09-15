@@ -309,18 +309,44 @@ def creer_mission():
     if not chauffeur_id or not donnees.get('date_mission'):
         return jsonify({'erreur': 'chauffeur_id et date_mission sont requis'}), 400
 
+    # Une mission créée pour le SEUL suivi du modérateur (ex. correction après un souci de saisie
+    # côté chauffeur) est directement enregistrée comme déjà acceptée et réalisée — elle n'apparaît
+    # donc jamais dans la liste "Missions" à accepter sur le téléphone du chauffeur.
+    interne = bool(donnees.get('interne_seulement'))
+    maintenant = datetime.now(FUSEAU_FR).strftime('%Y-%m-%d %H:%M:%S')
+
     conn = get_connection()
     curseur = conn.execute('''
-        INSERT INTO missions (chauffeur_id, date_mission, heure_depart, client, adresse, chef_de_chantier)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO missions (chauffeur_id, date_mission, heure_depart, client, adresse, chef_de_chantier,
+                               acceptee, acceptee_le, realisee, realisee_le, statut, nombre_tours)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         chauffeur_id, donnees['date_mission'], donnees.get('heure_depart'),
-        donnees.get('client'), donnees.get('adresse'), donnees.get('chef_de_chantier')
+        donnees.get('client'), donnees.get('adresse'), donnees.get('chef_de_chantier'),
+        1 if interne else 0, maintenant if interne else None,
+        1 if interne else 0, maintenant if interne else None,
+        'livree' if interne else 'a_venir',
+        donnees.get('nombre_tours') if interne else None
     ))
     conn.commit()
     mission_id = curseur.lastrowid
+
+    # Crée aussi directement la ligne de facturation correspondante, comme le fait la validation
+    # normale d'une mission — cohérent avec le fait qu'elle soit déjà marquée "réalisée".
+    facturation_id = None
+    if interne:
+        curseur2 = conn.execute('''
+            INSERT INTO facturation (mission_id, chauffeur_id, date_mission, client)
+            VALUES (?, ?, ?, ?)
+        ''', (mission_id, chauffeur_id, donnees['date_mission'], donnees.get('client')))
+        conn.commit()
+        facturation_id = curseur2.lastrowid
+
     conn.close()
-    return jsonify({'id': mission_id}), 201
+    reponse = {'id': mission_id}
+    if facturation_id:
+        reponse['facturation_id'] = facturation_id
+    return jsonify(reponse), 201
 
 
 @app.route('/api/missions/<int:mission_id>/accepter', methods=['PATCH'])
