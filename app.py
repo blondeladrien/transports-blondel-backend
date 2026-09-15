@@ -474,6 +474,22 @@ def declaration_du_jour():
     })
 
 
+def _date_journee_ouverte(conn, chauffeur_id):
+    """Retrouve la date de la journée de travail EN COURS pour ce chauffeur : la plus récente
+    déclaration avec un kilométrage de départ renseigné. Indispensable pour les services de nuit
+    (ex. départ 22h, clôture 2h du matin le lendemain) : sans ça, le kilométrage d'arrivée et les
+    indemnités se retrouveraient enregistrés sous la mauvaise date après minuit. Fonctionne quel
+    que soit l'ordre d'envoi (kilométrage d'arrivée avant ou après les indemnités)."""
+    ouverte = conn.execute('''
+        SELECT date_jour FROM declarations_journee
+        WHERE chauffeur_id = ? AND km_depart IS NOT NULL
+        ORDER BY date_jour DESC LIMIT 1
+    ''', (chauffeur_id,)).fetchone()
+    if ouverte:
+        return ouverte['date_jour']
+    return __import__('datetime').date.today().isoformat()
+
+
 @app.route('/api/declarations/km-depart', methods=['POST'])
 @authentification_requise(['chauffeur'])
 def declarer_km_depart():
@@ -503,10 +519,10 @@ def declarer_km_arrivee():
     if not chauffeur:
         return jsonify({'erreur': 'Fiche chauffeur introuvable'}), 404
     donnees = request.get_json(force=True) or {}
-    aujourdhui = donnees.get('date') or __import__('datetime').date.today().isoformat()
+    conn = get_connection()
+    aujourdhui = donnees.get('date') or _date_journee_ouverte(conn, chauffeur['id'])
     km_arrivee = donnees.get('km_arrivee')
 
-    conn = get_connection()
     conn.execute('''
         UPDATE declarations_journee
         SET km_arrivee = ?, heure_fin_service = time('now')
@@ -583,9 +599,9 @@ def declarer_indemnites():
     if not chauffeur:
         return jsonify({'erreur': 'Fiche chauffeur introuvable'}), 404
     donnees = request.get_json(force=True) or {}
-    aujourdhui = donnees.get('date') or __import__('datetime').date.today().isoformat()
-
     conn = get_connection()
+    aujourdhui = donnees.get('date') or _date_journee_ouverte(conn, chauffeur['id'])
+
     conn.execute('''
         INSERT INTO indemnites (chauffeur_id, date_jour, casse_croute, repas_nuit, repas, petit_decouche, grand_decouche, commentaire)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
