@@ -854,6 +854,25 @@ def mes_documents_chauffeur():
     return jsonify(dict(ligne) if ligne else {})
 
 
+@app.route('/api/documents/remorques/<int:remorque_id>', methods=['PUT'])
+@authentification_requise(['moderateur'])
+def enregistrer_documents_remorque(remorque_id):
+    donnees = request.get_json(force=True) or {}
+    conn = get_connection()
+    conn.execute('''
+        UPDATE remorques SET date_assurance = ?, date_controle_technique = ?,
+               date_extincteur = ?, date_chronotachygraphe = ?, date_tachylimiteur = ?
+        WHERE id = ?
+    ''', (
+        donnees.get('date_assurance'), donnees.get('date_controle_technique'),
+        donnees.get('date_extincteur'), donnees.get('date_chronotachygraphe'),
+        donnees.get('date_tachylimiteur'), remorque_id
+    ))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+
 @app.route('/api/documents/tracteurs/<int:tracteur_id>', methods=['PUT'])
 @authentification_requise(['moderateur'])
 def enregistrer_documents_tracteur(tracteur_id):
