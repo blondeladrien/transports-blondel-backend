@@ -253,6 +253,77 @@ def supprimer_remorque(remorque_id):
 
 
 # ============================================================
+# CLIENTS
+# ============================================================
+
+@app.route('/api/clients', methods=['GET'])
+@authentification_requise()
+def liste_clients():
+    conn = get_connection()
+    lignes = conn.execute('SELECT * FROM clients ORDER BY nom').fetchall()
+    conn.close()
+    return jsonify([dict(l) for l in lignes])
+
+
+@app.route('/api/clients', methods=['POST'])
+@authentification_requise(['moderateur'])
+def creer_client():
+    donnees = request.get_json(force=True) or {}
+    nom = (donnees.get('nom') or '').strip()
+    if not nom:
+        return jsonify({'erreur': 'Le nom du client est requis'}), 400
+    conn = get_connection()
+    if conn.execute('SELECT id FROM clients WHERE nom = ?', (nom,)).fetchone():
+        conn.close()
+        return jsonify({'erreur': 'Ce client existe déjà'}), 409
+    curseur = conn.execute(
+        'INSERT INTO clients (nom, adresse, contact) VALUES (?, ?, ?)',
+        (nom, donnees.get('adresse'), donnees.get('contact'))
+    )
+    conn.commit()
+    client_id = curseur.lastrowid
+    conn.close()
+    return jsonify({'id': client_id}), 201
+
+
+@app.route('/api/clients/<int:client_id>', methods=['DELETE'])
+@authentification_requise(['moderateur'])
+def supprimer_client(client_id):
+    conn = get_connection()
+    conn.execute('DELETE FROM clients WHERE id = ?', (client_id,))
+    conn.commit()
+    conn.close()
+    return '', 204
+
+
+@app.route('/api/clients/<int:client_id>/bilan', methods=['GET'])
+@authentification_requise(['moderateur'])
+def bilan_client(client_id):
+    """Renvoie toutes les missions réalisées pour ce client (tous chauffeurs confondus),
+    avec le total de tours effectués — pour l'onglet Client du dashboard."""
+    conn = get_connection()
+    client = conn.execute('SELECT * FROM clients WHERE id = ?', (client_id,)).fetchone()
+    if not client:
+        conn.close()
+        return jsonify({'erreur': 'Client introuvable'}), 404
+    missions = conn.execute('''
+        SELECT m.*, c.nom_complet AS chauffeur_nom
+        FROM missions m JOIN chauffeurs c ON c.id = m.chauffeur_id
+        WHERE m.client = ?
+        ORDER BY m.date_mission DESC
+    ''', (client['nom'],)).fetchall()
+    conn.close()
+    missions_liste = [dict(m) for m in missions]
+    total_tours = sum(m['nombre_tours'] or 0 for m in missions_liste if m['realisee'])
+    return jsonify({
+        'client': dict(client),
+        'missions': missions_liste,
+        'total_tours': total_tours,
+        'total_missions_realisees': len([m for m in missions_liste if m['realisee']])
+    })
+
+
+# ============================================================
 # MISSIONS
 # ============================================================
 
