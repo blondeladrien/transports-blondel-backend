@@ -73,6 +73,15 @@ CREATE TABLE IF NOT EXISTS documents_chauffeurs (
 );
 
 -- --- Missions ---
+-- --- Clients (utilisés lors de la création des missions) ---
+CREATE TABLE IF NOT EXISTS clients (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nom TEXT UNIQUE NOT NULL,
+    adresse TEXT,
+    contact TEXT,
+    cree_le TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS missions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     chauffeur_id INTEGER NOT NULL REFERENCES chauffeurs(id) ON DELETE CASCADE,
