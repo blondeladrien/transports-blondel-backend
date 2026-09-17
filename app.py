@@ -521,8 +521,14 @@ def declaration_du_jour():
         (chauffeur['id'], aujourdhui)
     ).fetchone()
 
+    # Une journée n'est considérée "en cours" (rien à suggérer, km déjà figé) que si elle a un
+    # départ SANS arrivée. Une fois clôturée (les deux renseignés), le cycle est refermé : le
+    # kilométrage du véhicule redevient immédiatement la suggestion pour une réouverture — jamais
+    # coincé sur le départ du matin jusqu'au passage à minuit.
+    jour_en_cours = bool(existante and existante['km_depart'] is not None and existante['km_arrivee'] is None)
+
     km_depart_suggere = None
-    if (not existante or not existante['km_depart']) and chauffeur['tracteur_id']:
+    if not jour_en_cours and chauffeur['tracteur_id']:
         tracteur = conn.execute(
             'SELECT kilometrage FROM tracteurs WHERE id = ?', (chauffeur['tracteur_id'],)
         ).fetchone()
@@ -531,7 +537,7 @@ def declaration_du_jour():
 
     conn.close()
     return jsonify({
-        'declaration': dict(existante) if existante else None,
+        'declaration': dict(existante) if jour_en_cours else None,
         'km_depart_suggere': km_depart_suggere
     })
 
