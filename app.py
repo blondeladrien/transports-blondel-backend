@@ -1084,7 +1084,7 @@ def modifier_remorque(remorque_id):
 @authentification_requise(['moderateur'])
 def modifier_mission(mission_id):
     donnees = request.get_json(force=True) or {}
-    champs_autorises = ['date_mission', 'heure_depart', 'client', 'adresse', 'chef_de_chantier', 'statut']
+    champs_autorises = ['date_mission', 'heure_depart', 'client', 'adresse', 'chef_de_chantier', 'statut', 'nombre_tours']
     a_modifier = {k: v for k, v in donnees.items() if k in champs_autorises}
     if not a_modifier:
         return jsonify({'erreur': 'Aucun champ valide à modifier'}), 400
