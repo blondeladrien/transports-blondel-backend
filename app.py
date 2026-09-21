@@ -899,6 +899,24 @@ def creer_plein():
     return jsonify({'id': plein_id}), 201
 
 
+@app.route('/api/pleins/<int:plein_id>', methods=['PATCH'])
+@authentification_requise(['moderateur'])
+def modifier_plein(plein_id):
+    """Corrige un plein mal renseigné (litrage, kilométrage, prix, date) depuis le dashboard."""
+    donnees = request.get_json(force=True) or {}
+    champs_autorises = ['litres', 'kilometrage', 'prix_total', 'date_plein']
+    a_modifier = {k: v for k, v in donnees.items() if k in champs_autorises}
+    if not a_modifier:
+        return jsonify({'erreur': 'Aucun champ valide à modifier'}), 400
+
+    conn = get_connection()
+    assignations = ', '.join(f'{champ} = ?' for champ in a_modifier)
+    conn.execute(f'UPDATE pleins_carburant SET {assignations} WHERE id = ?', (*a_modifier.values(), plein_id))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+
 @app.route('/api/pleins/<int:plein_id>', methods=['DELETE'])
 @authentification_requise(['moderateur'])
 def supprimer_plein(plein_id):
