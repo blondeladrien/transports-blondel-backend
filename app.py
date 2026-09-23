@@ -831,6 +831,16 @@ def declarer_achat():
     return jsonify({'id': achat_id}), 201
 
 
+@app.route('/api/achats/<int:achat_id>', methods=['DELETE'])
+@authentification_requise(['moderateur'])
+def supprimer_achat(achat_id):
+    conn = get_connection()
+    conn.execute('DELETE FROM achats WHERE id = ?', (achat_id,))
+    conn.commit()
+    conn.close()
+    return '', 204
+
+
 # ============================================================
 # PLEINS DE CARBURANT + TICPE
 # ============================================================
