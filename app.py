@@ -763,6 +763,103 @@ def declarer_indemnites():
     return jsonify({'ok': True})
 
 
+@app.route('/api/planning/journee', methods=['PUT'])
+@authentification_requise(['moderateur'])
+def corriger_journee():
+    """Correction manuelle d'une journée par le modérateur (en cas de défaillance du chauffeur).
+    Écrit dans les MÊMES tables que l'application mobile (indemnites, declarations_journee,
+    kilométrage du véhicule) : tous les onglets se mettent donc à jour comme si le chauffeur
+    avait saisi lui-même."""
+    d = request.get_json(force=True) or {}
+    chauffeur_id = d.get('chauffeur_id')
+    date_jour = d.get('date_jour')
+    if not chauffeur_id or not date_jour:
+        return jsonify({'erreur': 'chauffeur_id et date_jour sont requis'}), 400
+
+    conn = get_connection()
+    chauffeur = conn.execute('SELECT * FROM chauffeurs WHERE id = ?', (chauffeur_id,)).fetchone()
+    if not chauffeur:
+        conn.close()
+        return jsonify({'erreur': 'Chauffeur introuvable'}), 404
+
+    # --- Indemnités ---
+    if d.get('indemnites') is not None:
+        ind = d['indemnites']
+        valeurs = [int(bool(ind.get(cle))) for cle in TARIFS_INDEMNITES]
+        if any(valeurs):
+            conn.execute('''
+                INSERT INTO indemnites (chauffeur_id, date_jour, casse_croute, repas_nuit, repas, petit_decouche, grand_decouche)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(chauffeur_id, date_jour) DO UPDATE SET
+                    casse_croute=excluded.casse_croute, repas_nuit=excluded.repas_nuit, repas=excluded.repas,
+                    petit_decouche=excluded.petit_decouche, grand_decouche=excluded.grand_decouche
+            ''', (chauffeur_id, date_jour, *[int(bool(ind.get(cle))) for cle in
+                   ('casse_croute', 'repas_nuit', 'repas', 'petit_decouche', 'grand_decouche')]))
+        else:
+            conn.execute('DELETE FROM indemnites WHERE chauffeur_id = ? AND date_jour = ?', (chauffeur_id, date_jour))
+
+    # --- Kilomètres parcourus ---
+    if d.get('km_parcourus') is not None:
+        try:
+            km = int(d['km_parcourus'])
+        except (TypeError, ValueError):
+            conn.close()
+            return jsonify({'erreur': 'Kilomètres invalides'}), 400
+        if km < 0:
+            conn.close()
+            return jsonify({'erreur': 'Les kilomètres ne peuvent pas être négatifs'}), 400
+
+        decl = conn.execute(
+            'SELECT * FROM declarations_journee WHERE chauffeur_id = ? AND date_jour = ?', (chauffeur_id, date_jour)
+        ).fetchone()
+        tracteur_id = (decl['tracteur_id'] if decl else None) or chauffeur['tracteur_attitre_id'] or chauffeur['tracteur_id']
+        if not tracteur_id:
+            conn.close()
+            return jsonify({'erreur': "Ce chauffeur n'a aucun véhicule attitré : impossible de rattacher les kilomètres."}), 400
+
+        # Point de départ = dernière clôture de CE VÉHICULE avant ce jour (même logique que le
+        # calcul du Planning mensuel), sinon le départ déjà saisi, sinon le kilométrage actuel du véhicule.
+        prec = conn.execute('''
+            SELECT km_arrivee FROM declarations_journee
+            WHERE tracteur_id = ? AND km_arrivee IS NOT NULL AND date_jour < ?
+            ORDER BY date_jour DESC, COALESCE(heure_fin_service, '23:59:59') DESC LIMIT 1
+        ''', (tracteur_id, date_jour)).fetchone()
+        attitre = chauffeur['tracteur_attitre_id']
+        changement = attitre is not None and tracteur_id != attitre
+        if changement and decl and decl['km_depart'] is not None:
+            base = decl['km_depart']
+        elif prec:
+            base = prec['km_arrivee']
+        elif decl and decl['km_depart'] is not None:
+            base = decl['km_depart']
+        else:
+            plus_tard = conn.execute(
+                'SELECT 1 FROM declarations_journee WHERE tracteur_id = ? AND date_jour > ? AND km_arrivee IS NOT NULL LIMIT 1',
+                (tracteur_id, date_jour)).fetchone()
+            trac = conn.execute('SELECT kilometrage FROM tracteurs WHERE id = ?', (tracteur_id,)).fetchone()
+            if plus_tard or not trac or not trac['kilometrage']:
+                conn.close()
+                return jsonify({'erreur': "Aucun kilométrage de référence pour ce véhicule avant cette date : saisissez d'abord le kilométrage du véhicule dans l'onglet Véhicules."}), 400
+            base = trac['kilometrage']
+
+        km_depart = decl['km_depart'] if decl and decl['km_depart'] is not None else base
+        km_arrivee = base + km
+        conn.execute('''
+            INSERT INTO declarations_journee (chauffeur_id, date_jour, km_depart, km_arrivee, tracteur_id)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(chauffeur_id, date_jour) DO UPDATE SET
+                km_depart = excluded.km_depart, km_arrivee = excluded.km_arrivee, tracteur_id = excluded.tracteur_id
+        ''', (chauffeur_id, date_jour, km_depart, km_arrivee, tracteur_id))
+        conn.execute('''
+            UPDATE tracteurs SET kilometrage = ?
+            WHERE id = ? AND (kilometrage IS NULL OR kilometrage < ?)
+        ''', (km_arrivee, tracteur_id, km_arrivee))
+
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+
 @app.route('/api/cloture-jour/<int:chauffeur_id>/<date_jour>', methods=['DELETE'])
 @authentification_requise(['moderateur'])
 def supprimer_cloture_jour(chauffeur_id, date_jour):
@@ -1114,10 +1211,39 @@ def modifier_mission(mission_id):
     donnees = request.get_json(force=True) or {}
     champs_autorises = ['date_mission', 'heure_depart', 'client', 'adresse', 'chef_de_chantier', 'statut', 'nombre_tours']
     a_modifier = {k: v for k, v in donnees.items() if k in champs_autorises}
-    if not a_modifier:
+    if not a_modifier and 'realisee' not in donnees:
         return jsonify({'erreur': 'Aucun champ valide à modifier'}), 400
 
     conn = get_connection()
+
+    # Marquer une mission réalisée / non réalisée à la main (correction par le modérateur) :
+    # exactement le même effet que si le chauffeur l'avait validée sur son téléphone —
+    # ligne de facturation créée, ou retirée si elle n'a pas encore de numéro de facture.
+    if 'realisee' in donnees:
+        maintenant = datetime.now(FUSEAU_FR).strftime('%Y-%m-%d %H:%M:%S')
+        if donnees['realisee']:
+            conn.execute('''
+                UPDATE missions SET realisee = 1, realisee_le = COALESCE(realisee_le, ?),
+                    acceptee = 1, acceptee_le = COALESCE(acceptee_le, ?), statut = 'livree'
+                WHERE id = ?
+            ''', (maintenant, maintenant, mission_id))
+            mission = conn.execute('SELECT * FROM missions WHERE id = ?', (mission_id,)).fetchone()
+            if mission and not conn.execute('SELECT id FROM facturation WHERE mission_id = ?', (mission_id,)).fetchone():
+                conn.execute('''
+                    INSERT INTO facturation (mission_id, chauffeur_id, date_mission, client)
+                    VALUES (?, ?, ?, ?)
+                ''', (mission_id, mission['chauffeur_id'], mission['date_mission'], mission['client'] or 'Non renseigné'))
+        else:
+            conn.execute('''
+                UPDATE missions SET realisee = 0, realisee_le = NULL, statut = 'en_cours'
+                WHERE id = ?
+            ''', (mission_id,))
+            conn.execute('DELETE FROM facturation WHERE mission_id = ? AND numero_facture IS NULL', (mission_id,))
+        conn.commit()
+        if not a_modifier:
+            conn.close()
+            return jsonify({'ok': True})
+
     assignations = ', '.join(f'{champ} = ?' for champ in a_modifier)
     conn.execute(f'UPDATE missions SET {assignations} WHERE id = ?', (*a_modifier.values(), mission_id))
     conn.commit()
