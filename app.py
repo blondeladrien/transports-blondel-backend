@@ -994,7 +994,10 @@ def modifier_achat(achat_id):
             return jsonify({'erreur': 'Le taux de TVA doit être entre 0 et 100'}), 400
         champs.append('taux_tva = ?'); valeurs.append(taux)
     if 'categorie' in d:
-        champs.append('categorie = ?'); valeurs.append(d['categorie'])
+        champs.append('categorie = ?'); valeurs.append(d['categorie'] or None)
+        # Changer le type d'un achat déjà effectué en déduit aussitôt la TVA (sauf si un taux est imposé)
+        if 'taux_tva' not in d and d['categorie'] in TAUX_PAR_CATEGORIE:
+            champs.append('taux_tva = ?'); valeurs.append(TAUX_PAR_CATEGORIE[d['categorie']])
     if not champs:
         return jsonify({'erreur': 'Aucun champ à modifier'}), 400
     valeurs.append(achat_id)
