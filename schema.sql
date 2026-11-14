@@ -234,3 +234,13 @@ CREATE TABLE IF NOT EXISTS charges_fixes (
     date_fin TEXT,
     cree_le TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- --- Gestion : produits exceptionnels (recettes hors missions : vente de véhicule, subvention, remboursement...) ---
+CREATE TABLE IF NOT EXISTS produits_exceptionnels (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date_produit TEXT NOT NULL,
+    libelle TEXT NOT NULL,
+    montant_ttc REAL NOT NULL,
+    taux_tva REAL NOT NULL DEFAULT 20,
+    cree_le TEXT NOT NULL DEFAULT (datetime('now'))
+);
