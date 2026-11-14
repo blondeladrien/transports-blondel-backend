@@ -1667,6 +1667,7 @@ def supprimer_charge_manuelle(charge_id):
     return '', 204
 
 
+PREFIXE_EXCEPTIONNEL = 'Exceptionnel — '
 PAS_FREQUENCE = {'mensuelle': 1, 'trimestrielle': 3, 'annuelle': 12}
 
 
@@ -1801,6 +1802,52 @@ def changer_montant_charge_fixe(charge_id):
 def supprimer_charge_fixe(charge_id):
     conn = get_connection()
     conn.execute('DELETE FROM charges_fixes WHERE id = ?', (charge_id,))
+    conn.commit()
+    conn.close()
+    return '', 204
+
+
+@app.route('/api/gestion/produits-exceptionnels', methods=['GET'])
+@authentification_requise(['moderateur'])
+def liste_produits_exceptionnels():
+    annee = request.args.get('annee')
+    conn = get_connection()
+    if annee:
+        lignes = conn.execute('SELECT * FROM produits_exceptionnels WHERE date_produit LIKE ? ORDER BY date_produit DESC, id DESC',
+                              (f'{annee}%',)).fetchall()
+    else:
+        lignes = conn.execute('SELECT * FROM produits_exceptionnels ORDER BY date_produit DESC, id DESC').fetchall()
+    conn.close()
+    return jsonify([dict(l) for l in lignes])
+
+
+@app.route('/api/gestion/produits-exceptionnels', methods=['POST'])
+@authentification_requise(['moderateur'])
+def creer_produit_exceptionnel():
+    d = request.get_json(force=True) or {}
+    try:
+        montant = float(d.get('montant_ttc'))
+        taux = float(d.get('taux_tva', 20))
+    except (TypeError, ValueError):
+        return jsonify({'erreur': 'Montant ou taux de TVA invalide'}), 400
+    if not d.get('date_produit') or not (d.get('libelle') or '').strip():
+        return jsonify({'erreur': 'Date et libellé sont requis'}), 400
+    if taux < 0 or taux > 100:
+        return jsonify({'erreur': 'Le taux de TVA doit être entre 0 et 100'}), 400
+    conn = get_connection()
+    c = conn.execute('INSERT INTO produits_exceptionnels (date_produit, libelle, montant_ttc, taux_tva) VALUES (?, ?, ?, ?)',
+                     (d['date_produit'], d['libelle'].strip(), round(montant, 2), taux))
+    conn.commit()
+    nouvel_id = c.lastrowid
+    conn.close()
+    return jsonify({'id': nouvel_id}), 201
+
+
+@app.route('/api/gestion/produits-exceptionnels/<int:produit_id>', methods=['DELETE'])
+@authentification_requise(['moderateur'])
+def supprimer_produit_exceptionnel(produit_id):
+    conn = get_connection()
+    conn.execute('DELETE FROM produits_exceptionnels WHERE id = ?', (produit_id,))
     conn.commit()
     conn.close()
     return '', 204
@@ -1952,6 +1999,11 @@ def compte_de_resultat():
         nb_ventes += 1
         ajouter_ht(ventes, f['mois'] + '-01', f['montant_ht'], f['taux_tva'])
 
+    # Produits exceptionnels (hors missions)
+    produits_exc = vide()
+    for l in conn.execute('SELECT * FROM produits_exceptionnels WHERE date_produit LIKE ?', (f'{prefixe}%',)).fetchall():
+        ajouter(produits_exc, l['date_produit'], l['montant_ttc'], l['taux_tva'])
+
     # Charges reprises automatiquement
     carburant = vide()
     for l in conn.execute('SELECT date_plein, prix_total FROM pleins_carburant WHERE date_plein LIKE ? AND prix_total IS NOT NULL',
@@ -1978,8 +2030,9 @@ def compte_de_resultat():
         'Carburant (pleins enregistrés)': carburant,
         'Achats professionnels des chauffeurs': achats,
     }
+    # Charges exceptionnelles (ponctuelles) : présentées à part, sous le préfixe « Exceptionnel — »
     for l in conn.execute('SELECT * FROM charges_manuelles WHERE date_charge LIKE ?', (f'{prefixe}%',)).fetchall():
-        bloc = charges.setdefault(l['categorie'], vide())
+        bloc = charges.setdefault(PREFIXE_EXCEPTIONNEL + l['categorie'], vide())
         ajouter(bloc, l['date_charge'], l['montant_ttc'], l['taux_tva'])
     # Charges fixes récurrentes : une écriture à chaque échéance de l'année
     for l in conn.execute('SELECT * FROM charges_fixes').fetchall():
@@ -2000,13 +2053,17 @@ def compte_de_resultat():
     charges_ht_mois = [somme(b['ht'][m] for b in charges.values()) for m in range(12)]
     charges_ttc_mois = [somme(b['ttc'][m] for b in charges.values()) for m in range(12)]
     charges_tva_mois = [somme(b['tva'][m] for b in charges.values()) for m in range(12)]
-    produits_ht = somme(ventes['ht']); charges_ht = somme(charges_ht_mois)
-    produits_ttc = somme(ventes['ttc']); charges_ttc = somme(charges_ttc_mois)
-    tva_collectee = somme(ventes['tva']); tva_deductible = somme(charges_tva_mois)
+    # Total des produits = ventes de transport + produits exceptionnels
+    produits = {c: [ventes[c][m] + produits_exc[c][m] for m in range(12)] for c in ('ttc', 'ht', 'tva')}
+    produits_ht = somme(produits['ht']); charges_ht = somme(charges_ht_mois)
+    produits_ttc = somme(produits['ttc']); charges_ttc = somme(charges_ttc_mois)
+    tva_collectee = somme(produits['tva']); tva_deductible = somme(charges_tva_mois)
 
     return jsonify({
         'annee': annee,
-        'produits': exporter(ventes),
+        'produits': exporter(produits),
+        'ventes': exporter(ventes),
+        'produits_exceptionnels': exporter(produits_exc),
         'nb_lignes_facturees': nb_ventes,
         'nb_lignes_sans_montant': sans_montant,
         'charges': {nom: exporter(b) for nom, b in charges.items()},
@@ -2015,8 +2072,8 @@ def compte_de_resultat():
             'tva': [float(x) for x in charges_tva_mois],
             'total_ht': float(charges_ht), 'total_ttc': float(charges_ttc), 'total_tva': float(tva_deductible)
         },
-        'resultat_mensuel_ht': [float(ventes['ht'][m] - charges_ht_mois[m]) for m in range(12)],
-        'resultat_mensuel_ttc': [float(ventes['ttc'][m] - charges_ttc_mois[m]) for m in range(12)],
+        'resultat_mensuel_ht': [float(produits['ht'][m] - charges_ht_mois[m]) for m in range(12)],
+        'resultat_mensuel_ttc': [float(produits['ttc'][m] - charges_ttc_mois[m]) for m in range(12)],
         'resultat_ht': float(produits_ht - charges_ht),
         'resultat_ttc': float(produits_ttc - charges_ttc),
         'tva_collectee': float(tva_collectee),
