@@ -162,5 +162,24 @@ CREATE TABLE IF NOT EXISTS facturation (
     numero_facture TEXT,
     date_facturation TEXT,
     note TEXT,
+    montant_ttc REAL,
+    taux_tva REAL NOT NULL DEFAULT 20,
     cree_le TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- --- Gestion : charges saisies à la main (montants TTC) ---
+CREATE TABLE IF NOT EXISTS charges_manuelles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date_charge TEXT NOT NULL,
+    libelle TEXT NOT NULL,
+    categorie TEXT NOT NULL,
+    montant_ttc REAL NOT NULL,
+    taux_tva REAL NOT NULL DEFAULT 20,
+    cree_le TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- --- Gestion : paramètres (taux de TVA des charges reprises automatiquement) ---
+CREATE TABLE IF NOT EXISTS parametres_gestion (
+    cle TEXT PRIMARY KEY,
+    valeur TEXT NOT NULL
 );
