@@ -37,6 +37,14 @@ def _migrer_montants_facturation(conn):
         conn.execute('ALTER TABLE facturation ADD COLUMN montant_ttc REAL')
     if 'taux_tva' not in colonnes:
         conn.execute('ALTER TABLE facturation ADD COLUMN taux_tva REAL NOT NULL DEFAULT 20')
+    if 'facture_groupee_id' not in colonnes:
+        conn.execute('ALTER TABLE facturation ADD COLUMN facture_groupee_id INTEGER')
+    if 'montant_ht' not in colonnes:
+        # Les montants de la facturation sont désormais saisis en HT : les montants déjà entrés
+        # (jusqu'ici en TTC) sont convertis une seule fois, au centime, pour ne rien perdre.
+        conn.execute('ALTER TABLE facturation ADD COLUMN montant_ht REAL')
+        conn.execute('''UPDATE facturation SET montant_ht = ROUND(montant_ttc / (1 + taux_tva / 100.0), 2)
+                        WHERE montant_ttc IS NOT NULL''')
     conn.commit()
 
 
