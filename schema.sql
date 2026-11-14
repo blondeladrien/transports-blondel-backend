@@ -136,6 +136,8 @@ CREATE TABLE IF NOT EXISTS achats (
     date_achat TEXT NOT NULL,
     description TEXT,
     montant REAL NOT NULL,
+    categorie TEXT,
+    taux_tva REAL,
     cree_le TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
