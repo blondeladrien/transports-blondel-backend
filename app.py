@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 from flask import Flask, request, jsonify, g
 from werkzeug.security import generate_password_hash, check_password_hash
 from database import get_connection, init_db, seed_admin
-from auth import generer_token, authentification_requise
+from auth import generer_token, authentification_requise, verifier_token, serializer
 
 FUSEAU_FR = ZoneInfo('Europe/Paris')
 
@@ -55,6 +55,103 @@ def login():
         'role': utilisateur['role'],
         'utilisateur_id': utilisateur['id']
     })
+
+
+# ============================================================
+# ACCÈS COMPTABLE (lecture seule sur la Gestion)
+# ============================================================
+
+# Pour un comptable, seules ces lectures sont possibles ; tout le reste est refusé, quelle que soit la route.
+ROUTES_LECTURE_COMPTABLE = {'/api/facturation', '/api/facturation/groupees', '/api/pleins', '/api/achats'}
+
+
+@app.before_request
+def limiter_acces_comptable():
+    """Verrou général : un jeton « comptable » ne peut que LIRE la Gestion, et seulement tant que son accès existe encore."""
+    if not request.path.startswith('/api/') or request.method == 'OPTIONS':
+        return None
+    entete = request.headers.get('Authorization', '')
+    if not entete.startswith('Bearer '):
+        return None
+    donnees = verifier_token(entete.removeprefix('Bearer ').strip())
+    if not donnees or donnees.get('role') != 'comptable':
+        return None
+    conn = get_connection()
+    acces = conn.execute('SELECT id, version FROM acces_comptable').fetchone()
+    conn.close()
+    if not acces or acces['id'] != donnees.get('utilisateur_id') or acces['version'] != donnees.get('v'):
+        return jsonify({'erreur': 'Accès comptable révoqué ou expiré — reconnectez-vous'}), 401
+    if request.method == 'GET' and (request.path.startswith('/api/gestion/') or request.path in ROUTES_LECTURE_COMPTABLE):
+        return None
+    return jsonify({'erreur': "Accès en lecture seule : cette action n'est pas autorisée pour le comptable"}), 403
+
+
+@app.route('/api/auth/login-comptable', methods=['POST'])
+def login_comptable():
+    donnees = request.get_json(force=True) or {}
+    identifiant = (donnees.get('identifiant') or '').strip()
+    mot_de_passe = donnees.get('mot_de_passe') or ''
+    conn = get_connection()
+    acces = conn.execute('SELECT * FROM acces_comptable WHERE LOWER(identifiant) = LOWER(?)', (identifiant,)).fetchone()
+    conn.close()
+    if not acces or not check_password_hash(acces['mot_de_passe_hash'], mot_de_passe):
+        return jsonify({'erreur': 'Identifiant ou mot de passe incorrect'}), 401
+    token = serializer.dumps({'utilisateur_id': acces['id'], 'role': 'comptable', 'v': acces['version']})
+    return jsonify({'token': token, 'role': 'comptable'})
+
+
+@app.route('/api/gestion/acces-comptable', methods=['GET'])
+@authentification_requise(['moderateur'])
+def lire_acces_comptable():
+    conn = get_connection()
+    acces = conn.execute('SELECT identifiant, cree_le FROM acces_comptable').fetchone()
+    conn.close()
+    return jsonify({'actif': bool(acces), 'identifiant': acces['identifiant'] if acces else None})
+
+
+@app.route('/api/gestion/acces-comptable', methods=['PUT'])
+@authentification_requise(['moderateur'])
+def enregistrer_acces_comptable():
+    """Crée ou modifie l'unique accès comptable. Le mot de passe est obligatoire à la création, facultatif ensuite."""
+    d = request.get_json(force=True) or {}
+    identifiant = (d.get('identifiant') or '').strip()
+    mot_de_passe = d.get('mot_de_passe') or ''
+    if len(identifiant) < 3:
+        return jsonify({'erreur': "L'identifiant doit faire au moins 3 caractères"}), 400
+    conn = get_connection()
+    existant = conn.execute('SELECT * FROM acces_comptable').fetchone()
+    pris = conn.execute('SELECT 1 FROM utilisateurs WHERE LOWER(identifiant) = LOWER(?)', (identifiant,)).fetchone()
+    if pris:
+        conn.close()
+        return jsonify({'erreur': 'Cet identifiant est déjà utilisé par un autre compte'}), 409
+    if mot_de_passe and len(mot_de_passe) < 8:
+        conn.close()
+        return jsonify({'erreur': 'Le mot de passe doit faire au moins 8 caractères'}), 400
+    if not existant:
+        if not mot_de_passe:
+            conn.close()
+            return jsonify({'erreur': 'Un mot de passe est requis pour créer l\'accès'}), 400
+        conn.execute('INSERT INTO acces_comptable (identifiant, mot_de_passe_hash) VALUES (?, ?)',
+                     (identifiant, generate_password_hash(mot_de_passe)))
+    else:
+        if mot_de_passe:
+            conn.execute('UPDATE acces_comptable SET identifiant = ?, mot_de_passe_hash = ?, version = version + 1 WHERE id = ?',
+                         (identifiant, generate_password_hash(mot_de_passe), existant['id']))
+        else:
+            conn.execute('UPDATE acces_comptable SET identifiant = ?, version = version + 1 WHERE id = ?', (identifiant, existant['id']))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/gestion/acces-comptable', methods=['DELETE'])
+@authentification_requise(['moderateur'])
+def supprimer_acces_comptable():
+    conn = get_connection()
+    conn.execute('DELETE FROM acces_comptable')
+    conn.commit()
+    conn.close()
+    return '', 204
 
 
 # ============================================================
@@ -469,7 +566,7 @@ def valider_mission(mission_id):
 # ============================================================
 
 @app.route('/api/facturation', methods=['GET'])
-@authentification_requise(['moderateur'])
+@authentification_requise(['moderateur', 'comptable'])
 def liste_facturation():
     conn = get_connection()
     lignes = conn.execute('''
@@ -521,7 +618,7 @@ def facturer_ligne(ligne_id):
 
 
 @app.route('/api/facturation/groupees', methods=['GET'])
-@authentification_requise(['moderateur'])
+@authentification_requise(['moderateur', 'comptable'])
 def liste_factures_groupees():
     mois = request.args.get('mois')
     conn = get_connection()
@@ -1589,7 +1686,7 @@ def _lire_parametres(conn):
 
 
 @app.route('/api/gestion/parametres', methods=['GET'])
-@authentification_requise(['moderateur'])
+@authentification_requise(['moderateur', 'comptable'])
 def lire_parametres_gestion():
     conn = get_connection()
     p = _lire_parametres(conn)
@@ -1621,7 +1718,7 @@ def enregistrer_parametres_gestion():
 
 
 @app.route('/api/gestion/charges', methods=['GET'])
-@authentification_requise(['moderateur'])
+@authentification_requise(['moderateur', 'comptable'])
 def liste_charges_manuelles():
     annee = request.args.get('annee')
     conn = get_connection()
@@ -1712,7 +1809,7 @@ def _lire_donnees_charge_fixe(d):
 
 
 @app.route('/api/gestion/charges-fixes', methods=['GET'])
-@authentification_requise(['moderateur'])
+@authentification_requise(['moderateur', 'comptable'])
 def liste_charges_fixes():
     conn = get_connection()
     lignes = conn.execute('SELECT * FROM charges_fixes ORDER BY categorie, libelle').fetchall()
@@ -1808,7 +1905,7 @@ def supprimer_charge_fixe(charge_id):
 
 
 @app.route('/api/gestion/produits-exceptionnels', methods=['GET'])
-@authentification_requise(['moderateur'])
+@authentification_requise(['moderateur', 'comptable'])
 def liste_produits_exceptionnels():
     annee = request.args.get('annee')
     conn = get_connection()
@@ -1854,7 +1951,7 @@ def supprimer_produit_exceptionnel(produit_id):
 
 
 @app.route('/api/gestion/salaires', methods=['GET'])
-@authentification_requise(['moderateur'])
+@authentification_requise(['moderateur', 'comptable'])
 def liste_salaires():
     """Pour un mois (YYYY-MM) : une ligne par chauffeur (même sans saisie), + le suivi de la DSN du mois."""
     mois = request.args.get('mois')
@@ -1941,7 +2038,7 @@ def enregistrer_dsn():
 
 
 @app.route('/api/gestion/compte-resultat', methods=['GET'])
-@authentification_requise(['moderateur'])
+@authentification_requise(['moderateur', 'comptable'])
 def compte_de_resultat():
     """Exercice = année civile. Tout est calculé ligne par ligne au centime (HT arrondi par ligne,
     TVA = TTC - HT), puis additionné : les totaux sont donc exacts, sans écart d'arrondi."""
