@@ -506,7 +506,7 @@ def creer_ligne_facturation():
 def facturer_ligne(ligne_id):
     donnees = request.get_json(force=True) or {}
     champs, valeurs = [], []
-    for champ in ('numero_facture', 'date_facturation', 'note', 'montant_ttc', 'taux_tva'):
+    for champ in ('numero_facture', 'date_facturation', 'note', 'montant_ht', 'taux_tva'):
         if champ in donnees:
             champs.append(f'{champ} = ?')
             valeurs.append(donnees[champ])
@@ -518,6 +518,85 @@ def facturer_ligne(ligne_id):
     conn.commit()
     conn.close()
     return jsonify({'ok': True})
+
+
+@app.route('/api/facturation/groupees', methods=['GET'])
+@authentification_requise(['moderateur'])
+def liste_factures_groupees():
+    mois = request.args.get('mois')
+    conn = get_connection()
+    if mois:
+        factures = conn.execute('SELECT * FROM factures_groupees WHERE mois = ? ORDER BY id DESC', (mois,)).fetchall()
+    else:
+        factures = conn.execute('SELECT * FROM factures_groupees ORDER BY id DESC').fetchall()
+    resultat = []
+    for f in factures:
+        item = dict(f)
+        item['nb_lignes'] = conn.execute('SELECT COUNT(*) AS n FROM facturation WHERE facture_groupee_id = ?', (f['id'],)).fetchone()['n']
+        resultat.append(item)
+    conn.close()
+    return jsonify(resultat)
+
+
+@app.route('/api/facturation/groupees', methods=['POST'])
+@authentification_requise(['moderateur'])
+def creer_facture_groupee():
+    """Facture globale HT d'un mois pour les lignes encore « à facturer » (rouges) de un ou plusieurs
+    clients, quand le prix n'est pas connu ligne par ligne (paiement au nombre de tours). Les lignes
+    concernées passent en « facturées » ; le montant est porté par la facture globale, jamais deux fois."""
+    d = request.get_json(force=True) or {}
+    mois = d.get('mois')
+    clients = d.get('clients') or []
+    try:
+        montant_ht = float(d.get('montant_ht'))
+        taux = float(d.get('taux_tva', 20))
+    except (TypeError, ValueError):
+        return jsonify({'erreur': 'Montant HT ou taux de TVA invalide'}), 400
+    if not mois or len(mois) != 7 or not clients:
+        return jsonify({'erreur': 'Le mois et au moins un client sont requis'}), 400
+    if montant_ht < 0 or taux < 0 or taux > 100:
+        return jsonify({'erreur': 'Montant ou taux de TVA invalide'}), 400
+
+    conn = get_connection()
+    marques = ','.join('?' * len(clients))
+    lignes = conn.execute(f'''
+        SELECT id, client FROM facturation
+        WHERE date_mission LIKE ? AND client IN ({marques})
+          AND (numero_facture IS NULL OR numero_facture = '')
+          AND montant_ht IS NULL AND facture_groupee_id IS NULL
+    ''', (f'{mois}%', *clients)).fetchall()
+    if not lignes:
+        conn.close()
+        return jsonify({'erreur': "Aucune ligne « à facturer » sans montant pour ces clients sur ce mois."}), 400
+
+    date_facturation = d.get('date_facturation') or aujourdhui_fr()
+    curseur = conn.execute(
+        'INSERT INTO factures_groupees (mois, numero_facture, date_facturation, montant_ht, taux_tva, clients, note) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        (mois, (d.get('numero_facture') or '').strip() or None, date_facturation, montant_ht, taux,
+         ', '.join(sorted({l['client'] for l in lignes})), d.get('note')))
+    facture_id = curseur.lastrowid
+    numero = (d.get('numero_facture') or '').strip() or f'Facture globale n°{facture_id}'
+    ids = [l['id'] for l in lignes]
+    conn.execute(
+        f'UPDATE facturation SET numero_facture = ?, date_facturation = ?, facture_groupee_id = ? WHERE id IN ({",".join("?" * len(ids))})',
+        (numero, date_facturation, facture_id, *ids))
+    conn.commit()
+    conn.close()
+    return jsonify({'id': facture_id, 'nb_lignes': len(ids)}), 201
+
+
+@app.route('/api/facturation/groupees/<int:facture_id>', methods=['DELETE'])
+@authentification_requise(['moderateur'])
+def supprimer_facture_groupee(facture_id):
+    """Supprime la facture globale et remet ses lignes « à facturer » (rouges)."""
+    conn = get_connection()
+    conn.execute(
+        'UPDATE facturation SET numero_facture = NULL, date_facturation = NULL, facture_groupee_id = NULL WHERE facture_groupee_id = ?',
+        (facture_id,))
+    conn.execute('DELETE FROM factures_groupees WHERE id = ?', (facture_id,))
+    conn.commit()
+    conn.close()
+    return '', 204
 
 
 @app.route('/api/facturation/<int:ligne_id>', methods=['DELETE'])
@@ -1548,7 +1627,22 @@ def compte_de_resultat():
         bloc['ht'][m] += h
         bloc['tva'][m] += v
 
-    # Produits : lignes de facturation avec un montant TTC (mois = date de facturation, sinon date de mission)
+    def ajouter_ht(bloc, date_iso, ht, taux):
+        # Montant saisi en HT : TVA = HT x taux (arrondie au centime), TTC = HT + TVA
+        try:
+            m = int(date_iso[5:7]) - 1
+        except (TypeError, ValueError):
+            return
+        if not 0 <= m < 12:
+            return
+        h = _dec(ht).quantize(CENT, ROUND_HALF_UP)
+        v = (h * _dec(taux) / Decimal('100')).quantize(CENT, ROUND_HALF_UP)
+        bloc['ht'][m] += h
+        bloc['tva'][m] += v
+        bloc['ttc'][m] += h + v
+
+    # Produits : lignes de facturation saisies en HT (mois = date de facturation, sinon date de mission)
+    # + factures globales (mois = mois facturé)
     ventes = vide()
     sans_montant = 0
     nb_ventes = 0
@@ -1556,11 +1650,16 @@ def compte_de_resultat():
         date_ref = l['date_facturation'] or l['date_mission']
         if not date_ref or not date_ref.startswith(prefixe):
             continue
-        if l['montant_ttc'] is None:
+        if l['facture_groupee_id']:
+            continue   # le montant est porté par la facture globale (ajoutée plus bas)
+        if l['montant_ht'] is None:
             sans_montant += 1
             continue
         nb_ventes += 1
-        ajouter(ventes, date_ref, l['montant_ttc'], l['taux_tva'])
+        ajouter_ht(ventes, date_ref, l['montant_ht'], l['taux_tva'])
+    for f in conn.execute('SELECT * FROM factures_groupees WHERE mois LIKE ?', (f'{prefixe}%',)).fetchall():
+        nb_ventes += 1
+        ajouter_ht(ventes, f['mois'] + '-01', f['montant_ht'], f['taux_tva'])
 
     # Charges reprises automatiquement
     carburant = vide()
