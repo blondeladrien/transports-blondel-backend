@@ -1748,6 +1748,54 @@ def modifier_charge_fixe(charge_id):
     return jsonify({'ok': True})
 
 
+@app.route('/api/gestion/charges-fixes/<int:charge_id>/changer-montant', methods=['POST'])
+@authentification_requise(['moderateur'])
+def changer_montant_charge_fixe(charge_id):
+    """Change le montant d'une charge fixe À PARTIR d'un mois donné, sans toucher à l'historique :
+    l'ancienne charge se termine la veille, une nouvelle commence avec le nouveau montant."""
+    from datetime import date, timedelta
+    d = request.get_json(force=True) or {}
+    try:
+        montant = round(float(d.get('montant_ttc')), 2)
+        if montant < 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        return jsonify({'erreur': 'Montant invalide'}), 400
+    date_effet = (d.get('date_effet') or '')[:7]
+    if len(date_effet) != 7:
+        return jsonify({'erreur': "Le mois d'effet est requis"}), 400
+    date_effet += '-01'   # toujours le 1er du mois : un mois n'est jamais compté deux fois
+
+    conn = get_connection()
+    ancienne = conn.execute('SELECT * FROM charges_fixes WHERE id = ?', (charge_id,)).fetchone()
+    if not ancienne:
+        conn.close()
+        return jsonify({'erreur': 'Charge fixe introuvable'}), 404
+    try:
+        taux = float(d['taux_tva']) if d.get('taux_tva') not in (None, '') else ancienne['taux_tva']
+    except (TypeError, ValueError):
+        conn.close()
+        return jsonify({'erreur': 'Taux de TVA invalide'}), 400
+    if ancienne['date_fin'] and date_effet[:7] > ancienne['date_fin'][:7]:
+        conn.close()
+        return jsonify({'erreur': "Cette charge est déjà terminée à cette date."}), 400
+
+    if date_effet[:7] <= ancienne['date_debut'][:7]:
+        # Le changement a effet dès le début : aucun historique à préserver, on met simplement à jour
+        conn.execute('UPDATE charges_fixes SET montant_ttc = ?, taux_tva = ? WHERE id = ?', (montant, taux, charge_id))
+        nouvel_id = charge_id
+    else:
+        veille = (date.fromisoformat(date_effet) - timedelta(days=1)).isoformat()
+        conn.execute('UPDATE charges_fixes SET date_fin = ? WHERE id = ?', (veille, charge_id))
+        c = conn.execute(
+            'INSERT INTO charges_fixes (libelle, categorie, montant_ttc, taux_tva, frequence, date_debut, date_fin) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            (ancienne['libelle'], ancienne['categorie'], montant, taux, ancienne['frequence'], date_effet, ancienne['date_fin']))
+        nouvel_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True, 'id': nouvel_id})
+
+
 @app.route('/api/gestion/charges-fixes/<int:charge_id>', methods=['DELETE'])
 @authentification_requise(['moderateur'])
 def supprimer_charge_fixe(charge_id):
