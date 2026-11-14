@@ -221,3 +221,16 @@ CREATE TABLE IF NOT EXISTS dsn_mensuelles (
     montant REAL,
     note TEXT
 );
+
+-- --- Gestion : charges fixes récurrentes (loyer, crédit, assurance...) saisies une seule fois ---
+CREATE TABLE IF NOT EXISTS charges_fixes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    libelle TEXT NOT NULL,
+    categorie TEXT NOT NULL,
+    montant_ttc REAL NOT NULL,
+    taux_tva REAL NOT NULL DEFAULT 20,
+    frequence TEXT NOT NULL DEFAULT 'mensuelle' CHECK(frequence IN ('mensuelle', 'trimestrielle', 'annuelle')),
+    date_debut TEXT NOT NULL,
+    date_fin TEXT,
+    cree_le TEXT NOT NULL DEFAULT (datetime('now'))
+);
