@@ -28,7 +28,18 @@ def init_db():
     _migrer_documents_remorques(conn)
     _migrer_montants_facturation(conn)
     _migrer_dsn_montant(conn)
+    _migrer_achats_tva(conn)
     conn.close()
+
+
+def _migrer_achats_tva(conn):
+    """Ajoute aux achats le type d'achat (catégorie) et le taux de TVA qui en découle."""
+    colonnes = {row['name'] for row in conn.execute("PRAGMA table_info(achats)").fetchall()}
+    if 'categorie' not in colonnes:
+        conn.execute('ALTER TABLE achats ADD COLUMN categorie TEXT')
+    if 'taux_tva' not in colonnes:
+        conn.execute('ALTER TABLE achats ADD COLUMN taux_tva REAL')
+    conn.commit()
 
 
 def _migrer_dsn_montant(conn):
