@@ -506,7 +506,7 @@ def creer_ligne_facturation():
 def facturer_ligne(ligne_id):
     donnees = request.get_json(force=True) or {}
     champs, valeurs = [], []
-    for champ in ('numero_facture', 'date_facturation', 'note'):
+    for champ in ('numero_facture', 'date_facturation', 'note', 'montant_ttc', 'taux_tva'):
         if champ in donnees:
             champs.append(f'{champ} = ?')
             valeurs.append(donnees[champ])
@@ -1409,6 +1409,222 @@ def health():
 # `python3 app.py` (local) — gunicorn n'exécute jamais le bloc __main__ ci-dessous.
 init_db()
 seed_admin()
+
+# ============================================================
+# GESTION : charges manuelles, paramètres de TVA, compte de résultat
+# ============================================================
+
+from decimal import Decimal, ROUND_HALF_UP
+
+CENT = Decimal('0.01')
+
+CATEGORIES_CHARGES = [
+    'Salaires et charges sociales', 'Assurances', 'Crédits et leasing', 'Entretien et réparations',
+    'Pneumatiques', 'Péages', 'Loyers et charges locatives', 'Honoraires (comptable...)',
+    'Impôts et taxes', 'Frais bancaires', 'Fournitures et divers', 'Autres charges'
+]
+PARAMETRES_DEFAUT = {'tva_carburant': '20', 'tva_achats_pro': '20'}
+
+
+def _dec(valeur):
+    return Decimal(str(valeur if valeur is not None else 0))
+
+
+def _ht_tva(ttc, taux):
+    """Découpe un montant TTC en HT + TVA, arrondi au centime (la TVA = TTC - HT, donc la somme est exacte)."""
+    ttc = _dec(ttc).quantize(CENT, ROUND_HALF_UP)
+    ht = (ttc / (Decimal('1') + _dec(taux) / Decimal('100'))).quantize(CENT, ROUND_HALF_UP)
+    return ttc, ht, ttc - ht
+
+
+def _lire_parametres(conn):
+    p = dict(PARAMETRES_DEFAUT)
+    for l in conn.execute('SELECT cle, valeur FROM parametres_gestion').fetchall():
+        p[l['cle']] = l['valeur']
+    return p
+
+
+@app.route('/api/gestion/parametres', methods=['GET'])
+@authentification_requise(['moderateur'])
+def lire_parametres_gestion():
+    conn = get_connection()
+    p = _lire_parametres(conn)
+    conn.close()
+    return jsonify({'parametres': p, 'categories': CATEGORIES_CHARGES})
+
+
+@app.route('/api/gestion/parametres', methods=['PUT'])
+@authentification_requise(['moderateur'])
+def enregistrer_parametres_gestion():
+    donnees = request.get_json(force=True) or {}
+    conn = get_connection()
+    for cle in PARAMETRES_DEFAUT:
+        if cle in donnees:
+            try:
+                valeur = float(donnees[cle])
+            except (TypeError, ValueError):
+                conn.close()
+                return jsonify({'erreur': 'Taux de TVA invalide'}), 400
+            if valeur < 0 or valeur > 100:
+                conn.close()
+                return jsonify({'erreur': 'Le taux de TVA doit être entre 0 et 100'}), 400
+            conn.execute(
+                'INSERT INTO parametres_gestion (cle, valeur) VALUES (?, ?) '
+                'ON CONFLICT(cle) DO UPDATE SET valeur = excluded.valeur', (cle, str(valeur)))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/gestion/charges', methods=['GET'])
+@authentification_requise(['moderateur'])
+def liste_charges_manuelles():
+    annee = request.args.get('annee')
+    conn = get_connection()
+    if annee:
+        lignes = conn.execute('SELECT * FROM charges_manuelles WHERE date_charge LIKE ? ORDER BY date_charge DESC, id DESC',
+                              (f'{annee}%',)).fetchall()
+    else:
+        lignes = conn.execute('SELECT * FROM charges_manuelles ORDER BY date_charge DESC, id DESC').fetchall()
+    conn.close()
+    return jsonify([dict(l) for l in lignes])
+
+
+@app.route('/api/gestion/charges', methods=['POST'])
+@authentification_requise(['moderateur'])
+def creer_charge_manuelle():
+    d = request.get_json(force=True) or {}
+    try:
+        montant = float(d.get('montant_ttc'))
+        taux = float(d.get('taux_tva', 20))
+    except (TypeError, ValueError):
+        return jsonify({'erreur': 'Montant ou taux de TVA invalide'}), 400
+    if not d.get('date_charge') or not (d.get('libelle') or '').strip() or not d.get('categorie'):
+        return jsonify({'erreur': 'Date, libellé et catégorie sont requis'}), 400
+    if taux < 0 or taux > 100:
+        return jsonify({'erreur': 'Le taux de TVA doit être entre 0 et 100'}), 400
+    conn = get_connection()
+    c = conn.execute(
+        'INSERT INTO charges_manuelles (date_charge, libelle, categorie, montant_ttc, taux_tva) VALUES (?, ?, ?, ?, ?)',
+        (d['date_charge'], d['libelle'].strip(), d['categorie'], montant, taux))
+    conn.commit()
+    nouvel_id = c.lastrowid
+    conn.close()
+    return jsonify({'id': nouvel_id}), 201
+
+
+@app.route('/api/gestion/charges/<int:charge_id>', methods=['DELETE'])
+@authentification_requise(['moderateur'])
+def supprimer_charge_manuelle(charge_id):
+    conn = get_connection()
+    conn.execute('DELETE FROM charges_manuelles WHERE id = ?', (charge_id,))
+    conn.commit()
+    conn.close()
+    return '', 204
+
+
+@app.route('/api/gestion/compte-resultat', methods=['GET'])
+@authentification_requise(['moderateur'])
+def compte_de_resultat():
+    """Exercice = année civile. Tout est calculé ligne par ligne au centime (HT arrondi par ligne,
+    TVA = TTC - HT), puis additionné : les totaux sont donc exacts, sans écart d'arrondi."""
+    annee = request.args.get('annee') or aujourdhui_fr()[:4]
+    prefixe = f'{annee}-'
+    conn = get_connection()
+    params = _lire_parametres(conn)
+
+    def vide():
+        return {'ttc': [Decimal('0')] * 12, 'ht': [Decimal('0')] * 12, 'tva': [Decimal('0')] * 12}
+
+    def ajouter(bloc, date_iso, ttc, taux):
+        try:
+            m = int(date_iso[5:7]) - 1
+        except (TypeError, ValueError):
+            return
+        if not 0 <= m < 12:
+            return
+        t, h, v = _ht_tva(ttc, taux)
+        bloc['ttc'][m] += t
+        bloc['ht'][m] += h
+        bloc['tva'][m] += v
+
+    # Produits : lignes de facturation avec un montant TTC (mois = date de facturation, sinon date de mission)
+    ventes = vide()
+    sans_montant = 0
+    nb_ventes = 0
+    for l in conn.execute('SELECT * FROM facturation').fetchall():
+        date_ref = l['date_facturation'] or l['date_mission']
+        if not date_ref or not date_ref.startswith(prefixe):
+            continue
+        if l['montant_ttc'] is None:
+            sans_montant += 1
+            continue
+        nb_ventes += 1
+        ajouter(ventes, date_ref, l['montant_ttc'], l['taux_tva'])
+
+    # Charges reprises automatiquement
+    carburant = vide()
+    for l in conn.execute('SELECT date_plein, prix_total FROM pleins_carburant WHERE date_plein LIKE ? AND prix_total IS NOT NULL',
+                          (f'{prefixe}%',)).fetchall():
+        ajouter(carburant, l['date_plein'], l['prix_total'], params['tva_carburant'])
+
+    achats = vide()
+    for l in conn.execute("SELECT date_achat, montant FROM achats WHERE type = 'pro' AND date_achat LIKE ?",
+                          (f'{prefixe}%',)).fetchall():
+        ajouter(achats, l['date_achat'], l['montant'], params['tva_achats_pro'])
+
+    indemnites = vide()
+    for l in conn.execute('SELECT * FROM indemnites WHERE date_jour LIKE ?', (f'{prefixe}%',)).fetchall():
+        total_jour = sum((_dec(TARIFS_INDEMNITES[c]) for c in TARIFS_INDEMNITES if l[c]), Decimal('0'))
+        ajouter(indemnites, l['date_jour'], total_jour, 0)   # les indemnités n'ont pas de TVA
+
+    charges = {
+        'Carburant (pleins enregistrés)': carburant,
+        'Achats professionnels des chauffeurs': achats,
+        'Indemnités de route (frais de déplacement)': indemnites,
+    }
+    for l in conn.execute('SELECT * FROM charges_manuelles WHERE date_charge LIKE ?', (f'{prefixe}%',)).fetchall():
+        bloc = charges.setdefault(l['categorie'], vide())
+        ajouter(bloc, l['date_charge'], l['montant_ttc'], l['taux_tva'])
+    conn.close()
+
+    def somme(liste):
+        return sum(liste, Decimal('0'))
+
+    def exporter(bloc):
+        sortie = {c: [float(x) for x in bloc[c]] for c in ('ttc', 'ht', 'tva')}
+        sortie.update({'total_ttc': float(somme(bloc['ttc'])), 'total_ht': float(somme(bloc['ht'])),
+                       'total_tva': float(somme(bloc['tva']))})
+        return sortie
+
+    charges_ht_mois = [somme(b['ht'][m] for b in charges.values()) for m in range(12)]
+    charges_ttc_mois = [somme(b['ttc'][m] for b in charges.values()) for m in range(12)]
+    charges_tva_mois = [somme(b['tva'][m] for b in charges.values()) for m in range(12)]
+    produits_ht = somme(ventes['ht']); charges_ht = somme(charges_ht_mois)
+    produits_ttc = somme(ventes['ttc']); charges_ttc = somme(charges_ttc_mois)
+    tva_collectee = somme(ventes['tva']); tva_deductible = somme(charges_tva_mois)
+
+    return jsonify({
+        'annee': annee,
+        'produits': exporter(ventes),
+        'nb_lignes_facturees': nb_ventes,
+        'nb_lignes_sans_montant': sans_montant,
+        'charges': {nom: exporter(b) for nom, b in charges.items()},
+        'charges_totales': {
+            'ht': [float(x) for x in charges_ht_mois], 'ttc': [float(x) for x in charges_ttc_mois],
+            'tva': [float(x) for x in charges_tva_mois],
+            'total_ht': float(charges_ht), 'total_ttc': float(charges_ttc), 'total_tva': float(tva_deductible)
+        },
+        'resultat_mensuel_ht': [float(ventes['ht'][m] - charges_ht_mois[m]) for m in range(12)],
+        'resultat_mensuel_ttc': [float(ventes['ttc'][m] - charges_ttc_mois[m]) for m in range(12)],
+        'resultat_ht': float(produits_ht - charges_ht),
+        'resultat_ttc': float(produits_ttc - charges_ttc),
+        'tva_collectee': float(tva_collectee),
+        'tva_deductible': float(tva_deductible),
+        'tva_a_payer': float(tva_collectee - tva_deductible),
+        'parametres': params,
+    })
+
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5050))
