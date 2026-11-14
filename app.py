@@ -62,7 +62,8 @@ def login():
 # ============================================================
 
 # Pour un comptable, seules ces lectures sont possibles ; tout le reste est refusé, quelle que soit la route.
-ROUTES_LECTURE_COMPTABLE = {'/api/facturation', '/api/facturation/groupees', '/api/pleins', '/api/achats'}
+ROUTES_LECTURE_COMPTABLE = {'/api/facturation', '/api/facturation/groupees', '/api/pleins', '/api/achats',
+                            '/api/declarations', '/api/indemnites', '/api/tracteurs', '/api/remorques', '/api/chauffeurs'}
 
 
 @app.before_request
@@ -170,6 +171,10 @@ def liste_chauffeurs():
         ORDER BY c.nom_complet
     ''').fetchall()
     conn.close()
+    if g.user['role'] == 'comptable':
+        # Le comptable n'a pas besoin des coordonnées personnelles : nom et véhicules attribués seulement
+        champs = ('id', 'nom_complet', 'tracteur_id', 'remorque_id', 'tracteur_immat', 'remorque_immat')
+        return jsonify([{k: l[k] for k in champs} for l in lignes])
     return jsonify([dict(l) for l in lignes])
 
 
