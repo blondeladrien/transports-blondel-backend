@@ -956,6 +956,55 @@ def supprimer_cloture_jour(chauffeur_id, date_jour):
 # ACHATS (pro / perso)
 # ============================================================
 
+# Types d'achats professionnels et taux de TVA qui en découlent (le chauffeur choisit le type,
+# la TVA est déduite automatiquement ; le modérateur peut la corriger ligne par ligne).
+CATEGORIES_ACHATS = [
+    ('Repas / restaurant', 10),
+    ('Hébergement (hôtel)', 10),
+    ('Courses alimentaires (à emporter)', 5.5),
+    ('Péages', 20),
+    ('Parking', 20),
+    ('Lavage', 20),
+    ('Entretien / réparation', 20),
+    ('Pneumatiques', 20),
+    ('Fournitures / pièces', 20),
+    ('Autre', 20),
+]
+TAUX_PAR_CATEGORIE = dict(CATEGORIES_ACHATS)
+
+
+@app.route('/api/achats/categories', methods=['GET'])
+@authentification_requise(['moderateur', 'chauffeur'])
+def categories_achats():
+    return jsonify([{'nom': n, 'taux_tva': t} for n, t in CATEGORIES_ACHATS])
+
+
+@app.route('/api/achats/<int:achat_id>', methods=['PATCH'])
+@authentification_requise(['moderateur'])
+def modifier_achat(achat_id):
+    """Le modérateur corrige le type d'achat et/ou le taux de TVA d'un achat."""
+    d = request.get_json(force=True) or {}
+    champs, valeurs = [], []
+    if 'taux_tva' in d:
+        try:
+            taux = float(d['taux_tva'])
+        except (TypeError, ValueError):
+            return jsonify({'erreur': 'Taux de TVA invalide'}), 400
+        if taux < 0 or taux > 100:
+            return jsonify({'erreur': 'Le taux de TVA doit être entre 0 et 100'}), 400
+        champs.append('taux_tva = ?'); valeurs.append(taux)
+    if 'categorie' in d:
+        champs.append('categorie = ?'); valeurs.append(d['categorie'])
+    if not champs:
+        return jsonify({'erreur': 'Aucun champ à modifier'}), 400
+    valeurs.append(achat_id)
+    conn = get_connection()
+    conn.execute(f'UPDATE achats SET {", ".join(champs)} WHERE id = ?', valeurs)
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+
 @app.route('/api/achats', methods=['GET'])
 @authentification_requise()
 def liste_achats():
@@ -978,8 +1027,15 @@ def liste_achats():
         params.append(f'{mois}%')
     requete += ' ORDER BY date_achat DESC'
     lignes = conn.execute(requete, params).fetchall()
+    taux_defaut = float(_lire_parametres(conn)['tva_achats_pro'])
     conn.close()
-    return jsonify([dict(l) for l in lignes])
+    resultat = []
+    for l in lignes:
+        item = dict(l)
+        # Taux réellement appliqué : celui de l'achat, sinon le taux par défaut (anciens achats sans type)
+        item['taux_effectif'] = item['taux_tva'] if item.get('taux_tva') is not None else taux_defaut
+        resultat.append(item)
+    return jsonify(resultat)
 
 
 @app.route('/api/achats', methods=['POST'])
@@ -993,13 +1049,19 @@ def declarer_achat():
         return jsonify({'erreur': 'type (pro/perso) et montant sont requis'}), 400
 
     conn = get_connection()
+    categorie = donnees.get('categorie') if donnees['type'] == 'pro' else None
+    taux = None
+    if categorie:
+        taux = TAUX_PAR_CATEGORIE.get(categorie)
+        if taux is None:   # type inconnu : on le garde tel quel, avec le taux par défaut des achats pro
+            taux = float(_lire_parametres(conn)['tva_achats_pro'])
     curseur = conn.execute('''
-        INSERT INTO achats (chauffeur_id, type, date_achat, description, montant)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO achats (chauffeur_id, type, date_achat, description, montant, categorie, taux_tva)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
     ''', (
         chauffeur['id'], donnees['type'],
         donnees.get('date_achat') or aujourdhui_fr(),
-        donnees.get('description'), float(donnees['montant'])
+        donnees.get('description'), float(donnees['montant']), categorie, taux
     ))
     conn.commit()
     achat_id = curseur.lastrowid
@@ -1755,9 +1817,10 @@ def compte_de_resultat():
         ajouter(carburant, l['date_plein'], l['prix_total'], params['tva_carburant'])
 
     achats = vide()
-    for l in conn.execute("SELECT date_achat, montant FROM achats WHERE type = 'pro' AND date_achat LIKE ?",
+    for l in conn.execute("SELECT date_achat, montant, taux_tva FROM achats WHERE type = 'pro' AND date_achat LIKE ?",
                           (f'{prefixe}%',)).fetchall():
-        ajouter(achats, l['date_achat'], l['montant'], params['tva_achats_pro'])
+        taux_achat = l['taux_tva'] if l['taux_tva'] is not None else params['tva_achats_pro']
+        ajouter(achats, l['date_achat'], l['montant'], taux_achat)
 
     # Salaires nets + montant de la DSN : pas de TVA (HT = TTC). Les indemnités de route sont incluses dans le net.
     salaires_nets = vide()
