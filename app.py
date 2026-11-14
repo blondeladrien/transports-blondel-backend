@@ -1979,13 +1979,13 @@ def compte_de_resultat():
         bloc['tva'][m] += v
         bloc['ttc'][m] += h + v
 
-    # Produits : lignes de facturation saisies en HT (mois = date de facturation, sinon date de mission)
+    # Produits : lignes de facturation saisies en HT (mois = date de la mission)
     # + factures globales (mois = mois facturé)
     ventes = vide()
     sans_montant = 0
     nb_ventes = 0
     for l in conn.execute('SELECT * FROM facturation').fetchall():
-        date_ref = l['date_facturation'] or l['date_mission']
+        date_ref = l['date_mission']   # le produit est rattaché au mois de la mission
         if not date_ref or not date_ref.startswith(prefixe):
             continue
         if l['facture_groupee_id']:
