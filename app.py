@@ -1565,7 +1565,7 @@ CENT = Decimal('0.01')
 CATEGORIES_CHARGES = [
     'Assurances', 'Crédits et leasing', 'Entretien et réparations',
     'Pneumatiques', 'Péages', 'Loyers et charges locatives', 'Honoraires (comptable...)',
-    'Impôts et taxes', 'Frais bancaires', 'Fournitures et divers', 'Autres charges'
+    'Impôts et taxes', 'Frais bancaires', 'Abonnements (téléphone, logiciels...)', 'Fournitures et divers', 'Autres charges'
 ]
 PARAMETRES_DEFAUT = {'tva_carburant': '20', 'tva_achats_pro': '20'}
 
@@ -1662,6 +1662,97 @@ def creer_charge_manuelle():
 def supprimer_charge_manuelle(charge_id):
     conn = get_connection()
     conn.execute('DELETE FROM charges_manuelles WHERE id = ?', (charge_id,))
+    conn.commit()
+    conn.close()
+    return '', 204
+
+
+PAS_FREQUENCE = {'mensuelle': 1, 'trimestrielle': 3, 'annuelle': 12}
+
+
+def _echeances_charge_fixe(charge, annee):
+    """Mois (0-11) de l'année où une charge fixe est payée : à partir de sa date de début, tous les
+    1, 3 ou 12 mois, jusqu'à son éventuelle date de fin."""
+    pas = PAS_FREQUENCE.get(charge['frequence'], 1)
+    try:
+        debut_a, debut_m = int(charge['date_debut'][:4]), int(charge['date_debut'][5:7]) - 1
+    except (TypeError, ValueError):
+        return []
+    mois_ok = []
+    for m in range(12):
+        ecart = (int(annee) * 12 + m) - (debut_a * 12 + debut_m)
+        if ecart < 0 or ecart % pas != 0:
+            continue
+        if charge['date_fin'] and f'{annee}-{m + 1:02d}' > charge['date_fin'][:7]:
+            continue
+        mois_ok.append(m)
+    return mois_ok
+
+
+def _lire_donnees_charge_fixe(d):
+    """Valide et normalise les champs d'une charge fixe ; renvoie (valeurs, erreur)."""
+    try:
+        montant = float(d.get('montant_ttc'))
+        taux = float(d.get('taux_tva', 20))
+    except (TypeError, ValueError):
+        return None, 'Montant ou taux de TVA invalide'
+    libelle = (d.get('libelle') or '').strip()
+    if not libelle or not d.get('categorie') or not d.get('date_debut'):
+        return None, 'Libellé, catégorie et date de début sont requis'
+    if montant < 0 or taux < 0 or taux > 100:
+        return None, 'Montant ou taux de TVA invalide'
+    frequence = d.get('frequence') or 'mensuelle'
+    if frequence not in PAS_FREQUENCE:
+        return None, 'Fréquence invalide'
+    date_fin = d.get('date_fin') or None
+    if date_fin and date_fin < d['date_debut']:
+        return None, 'La date de fin est avant la date de début'
+    return (libelle, d['categorie'], round(montant, 2), taux, frequence, d['date_debut'], date_fin), None
+
+
+@app.route('/api/gestion/charges-fixes', methods=['GET'])
+@authentification_requise(['moderateur'])
+def liste_charges_fixes():
+    conn = get_connection()
+    lignes = conn.execute('SELECT * FROM charges_fixes ORDER BY categorie, libelle').fetchall()
+    conn.close()
+    return jsonify([dict(l) for l in lignes])
+
+
+@app.route('/api/gestion/charges-fixes', methods=['POST'])
+@authentification_requise(['moderateur'])
+def creer_charge_fixe():
+    valeurs, erreur = _lire_donnees_charge_fixe(request.get_json(force=True) or {})
+    if erreur:
+        return jsonify({'erreur': erreur}), 400
+    conn = get_connection()
+    c = conn.execute('INSERT INTO charges_fixes (libelle, categorie, montant_ttc, taux_tva, frequence, date_debut, date_fin) '
+                     'VALUES (?, ?, ?, ?, ?, ?, ?)', valeurs)
+    conn.commit()
+    nouvel_id = c.lastrowid
+    conn.close()
+    return jsonify({'id': nouvel_id}), 201
+
+
+@app.route('/api/gestion/charges-fixes/<int:charge_id>', methods=['PUT'])
+@authentification_requise(['moderateur'])
+def modifier_charge_fixe(charge_id):
+    valeurs, erreur = _lire_donnees_charge_fixe(request.get_json(force=True) or {})
+    if erreur:
+        return jsonify({'erreur': erreur}), 400
+    conn = get_connection()
+    conn.execute('UPDATE charges_fixes SET libelle = ?, categorie = ?, montant_ttc = ?, taux_tva = ?, frequence = ?, '
+                 'date_debut = ?, date_fin = ? WHERE id = ?', (*valeurs, charge_id))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/gestion/charges-fixes/<int:charge_id>', methods=['DELETE'])
+@authentification_requise(['moderateur'])
+def supprimer_charge_fixe(charge_id):
+    conn = get_connection()
+    conn.execute('DELETE FROM charges_fixes WHERE id = ?', (charge_id,))
     conn.commit()
     conn.close()
     return '', 204
@@ -1842,6 +1933,11 @@ def compte_de_resultat():
     for l in conn.execute('SELECT * FROM charges_manuelles WHERE date_charge LIKE ?', (f'{prefixe}%',)).fetchall():
         bloc = charges.setdefault(l['categorie'], vide())
         ajouter(bloc, l['date_charge'], l['montant_ttc'], l['taux_tva'])
+    # Charges fixes récurrentes : une écriture à chaque échéance de l'année
+    for l in conn.execute('SELECT * FROM charges_fixes').fetchall():
+        for m in _echeances_charge_fixe(l, annee):
+            bloc = charges.setdefault(l['categorie'], vide())
+            ajouter(bloc, f'{annee}-{m + 1:02d}-01', l['montant_ttc'], l['taux_tva'])
     conn.close()
 
     def somme(liste):
