@@ -244,3 +244,13 @@ CREATE TABLE IF NOT EXISTS produits_exceptionnels (
     taux_tva REAL NOT NULL DEFAULT 20,
     cree_le TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- --- Accès comptable : un seul compte, en lecture seule sur l'espace Gestion ---
+-- 'version' change à chaque modification (mot de passe, identifiant) : les anciennes sessions deviennent invalides.
+CREATE TABLE IF NOT EXISTS acces_comptable (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    identifiant TEXT NOT NULL UNIQUE,
+    mot_de_passe_hash TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    cree_le TEXT NOT NULL DEFAULT (datetime('now'))
+);
