@@ -164,6 +164,8 @@ CREATE TABLE IF NOT EXISTS facturation (
     note TEXT,
     montant_ttc REAL,
     taux_tva REAL NOT NULL DEFAULT 20,
+    montant_ht REAL,
+    facture_groupee_id INTEGER,
     cree_le TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -182,4 +184,17 @@ CREATE TABLE IF NOT EXISTS charges_manuelles (
 CREATE TABLE IF NOT EXISTS parametres_gestion (
     cle TEXT PRIMARY KEY,
     valeur TEXT NOT NULL
+);
+
+-- --- Facturation : factures globales couvrant plusieurs lignes sans montant (payé au nombre de tours) ---
+CREATE TABLE IF NOT EXISTS factures_groupees (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mois TEXT NOT NULL,
+    numero_facture TEXT,
+    date_facturation TEXT,
+    montant_ht REAL NOT NULL,
+    taux_tva REAL NOT NULL DEFAULT 20,
+    clients TEXT,
+    note TEXT,
+    cree_le TEXT NOT NULL DEFAULT (datetime('now'))
 );
