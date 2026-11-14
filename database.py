@@ -26,7 +26,18 @@ def init_db():
     _migrer_vehicule_attitre(conn)
     _migrer_note_facturation(conn)
     _migrer_documents_remorques(conn)
+    _migrer_montants_facturation(conn)
     conn.close()
+
+
+def _migrer_montants_facturation(conn):
+    """Ajoute à la facturation le montant TTC et le taux de TVA de chaque ligne (partie Gestion)."""
+    colonnes = {row['name'] for row in conn.execute("PRAGMA table_info(facturation)").fetchall()}
+    if 'montant_ttc' not in colonnes:
+        conn.execute('ALTER TABLE facturation ADD COLUMN montant_ttc REAL')
+    if 'taux_tva' not in colonnes:
+        conn.execute('ALTER TABLE facturation ADD COLUMN taux_tva REAL NOT NULL DEFAULT 20')
+    conn.commit()
 
 
 def _migrer_documents_remorques(conn):
