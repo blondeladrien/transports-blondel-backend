@@ -1498,7 +1498,7 @@ from decimal import Decimal, ROUND_HALF_UP
 CENT = Decimal('0.01')
 
 CATEGORIES_CHARGES = [
-    'Salaires et charges sociales', 'Assurances', 'Crédits et leasing', 'Entretien et réparations',
+    'Assurances', 'Crédits et leasing', 'Entretien et réparations',
     'Pneumatiques', 'Péages', 'Loyers et charges locatives', 'Honoraires (comptable...)',
     'Impôts et taxes', 'Frais bancaires', 'Fournitures et divers', 'Autres charges'
 ]
@@ -1602,6 +1602,93 @@ def supprimer_charge_manuelle(charge_id):
     return '', 204
 
 
+@app.route('/api/gestion/salaires', methods=['GET'])
+@authentification_requise(['moderateur'])
+def liste_salaires():
+    """Pour un mois (YYYY-MM) : une ligne par chauffeur (même sans saisie), + le suivi de la DSN du mois."""
+    mois = request.args.get('mois')
+    if not mois or len(mois) != 7:
+        return jsonify({'erreur': 'Le paramètre mois (YYYY-MM) est requis'}), 400
+    conn = get_connection()
+    chauffeurs = conn.execute('SELECT id, nom_complet FROM chauffeurs ORDER BY nom_complet').fetchall()
+    saisies = {l['chauffeur_id']: dict(l) for l in conn.execute('SELECT * FROM salaires WHERE mois = ?', (mois,)).fetchall()}
+    lignes = []
+    for c in chauffeurs:
+        s = saisies.pop(c['id'], None)
+        lignes.append({
+            'chauffeur_id': c['id'], 'chauffeur_nom': c['nom_complet'],
+            'brut': s['brut'] if s else None, 'charges_patronales': s['charges_patronales'] if s else None,
+            'net_paye': s['net_paye'] if s else None, 'saisi': bool(s)
+        })
+    for s in saisies.values():   # chauffeurs supprimés depuis, dont l'historique est conservé
+        lignes.append({
+            'chauffeur_id': s['chauffeur_id'], 'chauffeur_nom': (s['chauffeur_nom'] or 'Ancien chauffeur') + ' (supprimé)',
+            'brut': s['brut'], 'charges_patronales': s['charges_patronales'], 'net_paye': s['net_paye'], 'saisi': True
+        })
+    dsn = conn.execute('SELECT * FROM dsn_mensuelles WHERE mois = ?', (mois,)).fetchone()
+    conn.close()
+    return jsonify({'mois': mois, 'lignes': lignes, 'dsn': dict(dsn) if dsn else {'mois': mois, 'date_depot': None, 'montant': None, 'note': None}})
+
+
+@app.route('/api/gestion/salaires', methods=['PUT'])
+@authentification_requise(['moderateur'])
+def enregistrer_salaire():
+    """Salaire NET du mois d'un chauffeur (indemnités de route incluses). Vide ou 0 = efface la saisie."""
+    d = request.get_json(force=True) or {}
+    mois = d.get('mois')
+    chauffeur_id = d.get('chauffeur_id')
+    if not mois or len(mois) != 7 or not chauffeur_id:
+        return jsonify({'erreur': 'mois et chauffeur_id sont requis'}), 400
+    try:
+        v = d.get('net_paye')
+        net = None if v is None or v == '' else round(float(v), 2)
+        if net is not None and net < 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        return jsonify({'erreur': 'Montant invalide'}), 400
+
+    conn = get_connection()
+    chauffeur = conn.execute('SELECT nom_complet FROM chauffeurs WHERE id = ?', (chauffeur_id,)).fetchone()
+    if not chauffeur:
+        conn.close()
+        return jsonify({'erreur': 'Chauffeur introuvable'}), 404
+    if not net:
+        conn.execute('DELETE FROM salaires WHERE chauffeur_id = ? AND mois = ?', (chauffeur_id, mois))
+    else:
+        conn.execute(
+            'INSERT INTO salaires (chauffeur_id, chauffeur_nom, mois, brut, charges_patronales, net_paye) VALUES (?, ?, ?, 0, 0, ?) '
+            'ON CONFLICT(chauffeur_id, mois) DO UPDATE SET net_paye = excluded.net_paye, chauffeur_nom = excluded.chauffeur_nom',
+            (chauffeur_id, chauffeur['nom_complet'], mois, net))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/gestion/dsn', methods=['PUT'])
+@authentification_requise(['moderateur'])
+def enregistrer_dsn():
+    d = request.get_json(force=True) or {}
+    mois = d.get('mois')
+    if not mois or len(mois) != 7:
+        return jsonify({'erreur': 'Le mois (YYYY-MM) est requis'}), 400
+    conn = get_connection()
+    try:
+        v = d.get('montant')
+        montant = None if v is None or v == '' else round(float(v), 2)
+        if montant is not None and montant < 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        conn.close()
+        return jsonify({'erreur': 'Montant invalide'}), 400
+    conn.execute(
+        'INSERT INTO dsn_mensuelles (mois, date_depot, montant, note) VALUES (?, ?, ?, ?) '
+        'ON CONFLICT(mois) DO UPDATE SET date_depot = excluded.date_depot, montant = excluded.montant, note = excluded.note',
+        (mois, d.get('date_depot') or None, montant, d.get('note') or None))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+
 @app.route('/api/gestion/compte-resultat', methods=['GET'])
 @authentification_requise(['moderateur'])
 def compte_de_resultat():
@@ -1672,15 +1759,19 @@ def compte_de_resultat():
                           (f'{prefixe}%',)).fetchall():
         ajouter(achats, l['date_achat'], l['montant'], params['tva_achats_pro'])
 
-    indemnites = vide()
-    for l in conn.execute('SELECT * FROM indemnites WHERE date_jour LIKE ?', (f'{prefixe}%',)).fetchall():
-        total_jour = sum((_dec(TARIFS_INDEMNITES[c]) for c in TARIFS_INDEMNITES if l[c]), Decimal('0'))
-        ajouter(indemnites, l['date_jour'], total_jour, 0)   # les indemnités n'ont pas de TVA
+    # Salaires nets + montant de la DSN : pas de TVA (HT = TTC). Les indemnités de route sont incluses dans le net.
+    salaires_nets = vide()
+    cotisations = vide()
+    for l in conn.execute('SELECT * FROM salaires WHERE mois LIKE ? AND net_paye IS NOT NULL', (f'{prefixe}%',)).fetchall():
+        ajouter(salaires_nets, l['mois'] + '-01', l['net_paye'], 0)
+    for l in conn.execute('SELECT * FROM dsn_mensuelles WHERE mois LIKE ? AND montant IS NOT NULL', (f'{prefixe}%',)).fetchall():
+        ajouter(cotisations, l['mois'] + '-01', l['montant'], 0)
 
     charges = {
+        'Salaires nets des chauffeurs (indemnités incluses)': salaires_nets,
+        'Cotisations sociales et prélèvements (DSN)': cotisations,
         'Carburant (pleins enregistrés)': carburant,
         'Achats professionnels des chauffeurs': achats,
-        'Indemnités de route (frais de déplacement)': indemnites,
     }
     for l in conn.execute('SELECT * FROM charges_manuelles WHERE date_charge LIKE ?', (f'{prefixe}%',)).fetchall():
         bloc = charges.setdefault(l['categorie'], vide())
