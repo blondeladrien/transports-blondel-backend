@@ -27,7 +27,16 @@ def init_db():
     _migrer_note_facturation(conn)
     _migrer_documents_remorques(conn)
     _migrer_montants_facturation(conn)
+    _migrer_dsn_montant(conn)
     conn.close()
+
+
+def _migrer_dsn_montant(conn):
+    """Ajoute à la DSN mensuelle le montant total des cotisations et prélèvements à payer."""
+    colonnes = {row['name'] for row in conn.execute("PRAGMA table_info(dsn_mensuelles)").fetchall()}
+    if colonnes and 'montant' not in colonnes:
+        conn.execute('ALTER TABLE dsn_mensuelles ADD COLUMN montant REAL')
+        conn.commit()
 
 
 def _migrer_montants_facturation(conn):
