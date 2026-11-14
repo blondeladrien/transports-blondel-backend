@@ -1,114 +1,221 @@
-import sqlite3
-import os
+-- ============================================================
+-- Transports A.Blondel — Schéma de base de données
+-- ============================================================
 
-# En production, définissez la variable d'environnement DB_PATH pour pointer vers
-# le disque persistant Render (ex. /var/data/transports_blondel.db) — sans cette
-# variable, la base est stockée à côté du code, sur un disque effacé à chaque déploiement.
-DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(__file__), 'transports_blondel.db'))
-SCHEMA_PATH = os.path.join(os.path.dirname(__file__), 'schema.sql')
+PRAGMA foreign_keys = ON;
 
+-- --- Comptes utilisateurs (modérateurs et chauffeurs) ---
+CREATE TABLE IF NOT EXISTS utilisateurs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    identifiant TEXT UNIQUE NOT NULL,
+    mot_de_passe_hash TEXT NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('moderateur', 'chauffeur')),
+    actif INTEGER NOT NULL DEFAULT 1,
+    cree_le TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
-def get_connection():
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute('PRAGMA foreign_keys = ON')
-    return conn
+-- --- Chauffeurs (fiche complète, liée à un compte utilisateur) ---
+CREATE TABLE IF NOT EXISTS chauffeurs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    utilisateur_id INTEGER REFERENCES utilisateurs(id) ON DELETE SET NULL,
+    nom_complet TEXT NOT NULL,
+    telephone TEXT,
+    numero_permis TEXT,
+    tracteur_id INTEGER REFERENCES tracteurs(id) ON DELETE SET NULL,
+    remorque_id INTEGER REFERENCES remorques(id) ON DELETE SET NULL,
+    tracteur_attitre_id INTEGER REFERENCES tracteurs(id) ON DELETE SET NULL,
+    remorque_attitree_id INTEGER REFERENCES remorques(id) ON DELETE SET NULL,
+    derniere_utilisation TEXT,
+    cree_le TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
+-- --- Tracteurs routiers ---
+CREATE TABLE IF NOT EXISTS tracteurs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    immatriculation TEXT UNIQUE NOT NULL,
+    modele TEXT,
+    kilometrage INTEGER DEFAULT 0,
+    date_controle_technique TEXT,
+    date_rdv_controle_technique TEXT,
+    date_assurance TEXT,
+    date_extincteur TEXT,
+    date_chronotachygraphe TEXT,
+    date_tachylimiteur TEXT,
+    cree_le TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
-def init_db():
-    """Crée les tables si elles n'existent pas encore, et migre les bases déjà existantes
-    (ajout de colonnes sans jamais perdre les données déjà en place)."""
-    conn = get_connection()
-    with open(SCHEMA_PATH, 'r', encoding='utf-8') as f:
-        conn.executescript(f.read())
-    conn.commit()
-    _migrer_vehicule_attitre(conn)
-    _migrer_note_facturation(conn)
-    _migrer_documents_remorques(conn)
-    _migrer_montants_facturation(conn)
-    _migrer_dsn_montant(conn)
-    conn.close()
+-- --- Remorques ---
+CREATE TABLE IF NOT EXISTS remorques (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    immatriculation TEXT UNIQUE NOT NULL,
+    type TEXT,
+    tracteur_id INTEGER REFERENCES tracteurs(id) ON DELETE SET NULL,
+    date_controle_technique TEXT,
+    date_rdv_controle_technique TEXT,
+    date_assurance TEXT,
+    date_extincteur TEXT,
+    date_chronotachygraphe TEXT,
+    date_tachylimiteur TEXT,
+    cree_le TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
+-- --- Documents personnels des chauffeurs (dates d'échéance) ---
+CREATE TABLE IF NOT EXISTS documents_chauffeurs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chauffeur_id INTEGER NOT NULL REFERENCES chauffeurs(id) ON DELETE CASCADE,
+    carte_identite TEXT,
+    permis TEXT,
+    passeport TEXT,
+    carte_conducteur TEXT,
+    adr TEXT,
+    chronotachygraphe TEXT,
+    UNIQUE(chauffeur_id)
+);
 
-def _migrer_dsn_montant(conn):
-    """Ajoute à la DSN mensuelle le montant total des cotisations et prélèvements à payer."""
-    colonnes = {row['name'] for row in conn.execute("PRAGMA table_info(dsn_mensuelles)").fetchall()}
-    if colonnes and 'montant' not in colonnes:
-        conn.execute('ALTER TABLE dsn_mensuelles ADD COLUMN montant REAL')
-        conn.commit()
+-- --- Missions ---
+-- --- Clients (utilisés lors de la création des missions) ---
+CREATE TABLE IF NOT EXISTS clients (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nom TEXT UNIQUE NOT NULL,
+    adresse TEXT,
+    contact TEXT,
+    cree_le TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
+CREATE TABLE IF NOT EXISTS missions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chauffeur_id INTEGER NOT NULL REFERENCES chauffeurs(id) ON DELETE CASCADE,
+    date_mission TEXT NOT NULL,
+    heure_depart TEXT,
+    client TEXT,
+    adresse TEXT,
+    chef_de_chantier TEXT,
+    document_url TEXT,
+    statut TEXT NOT NULL DEFAULT 'a_venir' CHECK(statut IN ('a_venir', 'en_cours', 'livree', 'incident')),
+    acceptee INTEGER NOT NULL DEFAULT 0,
+    acceptee_le TEXT,
+    realisee INTEGER NOT NULL DEFAULT 0,
+    realisee_le TEXT,
+    nombre_tours INTEGER,
+    remarque TEXT,
+    cree_le TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
-def _migrer_montants_facturation(conn):
-    """Ajoute à la facturation le montant TTC et le taux de TVA de chaque ligne (partie Gestion)."""
-    colonnes = {row['name'] for row in conn.execute("PRAGMA table_info(facturation)").fetchall()}
-    if 'montant_ttc' not in colonnes:
-        conn.execute('ALTER TABLE facturation ADD COLUMN montant_ttc REAL')
-    if 'taux_tva' not in colonnes:
-        conn.execute('ALTER TABLE facturation ADD COLUMN taux_tva REAL NOT NULL DEFAULT 20')
-    if 'facture_groupee_id' not in colonnes:
-        conn.execute('ALTER TABLE facturation ADD COLUMN facture_groupee_id INTEGER')
-    if 'montant_ht' not in colonnes:
-        # Les montants de la facturation sont désormais saisis en HT : les montants déjà entrés
-        # (jusqu'ici en TTC) sont convertis une seule fois, au centime, pour ne rien perdre.
-        conn.execute('ALTER TABLE facturation ADD COLUMN montant_ht REAL')
-        conn.execute('''UPDATE facturation SET montant_ht = ROUND(montant_ttc / (1 + taux_tva / 100.0), 2)
-                        WHERE montant_ttc IS NOT NULL''')
-    conn.commit()
+-- --- Déclarations de journée (prise/fin de service, kilométrage) ---
+CREATE TABLE IF NOT EXISTS declarations_journee (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chauffeur_id INTEGER NOT NULL REFERENCES chauffeurs(id) ON DELETE CASCADE,
+    date_jour TEXT NOT NULL,
+    heure_prise_service TEXT,
+    heure_fin_service TEXT,
+    km_depart INTEGER,
+    km_arrivee INTEGER,
+    tracteur_id INTEGER REFERENCES tracteurs(id) ON DELETE SET NULL,
+    UNIQUE(chauffeur_id, date_jour)
+);
 
+-- --- Indemnités (frais de route) déclarées par jour ---
+CREATE TABLE IF NOT EXISTS indemnites (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chauffeur_id INTEGER NOT NULL REFERENCES chauffeurs(id) ON DELETE CASCADE,
+    date_jour TEXT NOT NULL,
+    casse_croute INTEGER NOT NULL DEFAULT 0,
+    repas_nuit INTEGER NOT NULL DEFAULT 0,
+    repas INTEGER NOT NULL DEFAULT 0,
+    petit_decouche INTEGER NOT NULL DEFAULT 0,
+    grand_decouche INTEGER NOT NULL DEFAULT 0,
+    commentaire TEXT,
+    UNIQUE(chauffeur_id, date_jour)
+);
 
-def _migrer_documents_remorques(conn):
-    """Ajoute aux remorques les mêmes colonnes de documents que les tracteurs (assurance,
-    extincteur, chronotachygraphe, tachylimiteur) — absentes jusqu'ici, ce qui faisait que ces
-    dates semblaient s'enregistrer dans l'interface mais disparaissaient à chaque reconnexion,
-    faute d'un endroit où les sauvegarder réellement en base."""
-    colonnes = {row['name'] for row in conn.execute("PRAGMA table_info(remorques)").fetchall()}
-    for champ in ('date_assurance', 'date_extincteur', 'date_chronotachygraphe', 'date_tachylimiteur'):
-        if champ not in colonnes:
-            conn.execute(f'ALTER TABLE remorques ADD COLUMN {champ} TEXT')
-    conn.commit()
+-- --- Achats déclarés (pro ou perso) ---
+CREATE TABLE IF NOT EXISTS achats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chauffeur_id INTEGER NOT NULL REFERENCES chauffeurs(id) ON DELETE CASCADE,
+    type TEXT NOT NULL CHECK(type IN ('pro', 'perso')),
+    date_achat TEXT NOT NULL,
+    description TEXT,
+    montant REAL NOT NULL,
+    cree_le TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
+-- --- Pleins de carburant ---
+CREATE TABLE IF NOT EXISTS pleins_carburant (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tracteur_id INTEGER NOT NULL REFERENCES tracteurs(id) ON DELETE CASCADE,
+    chauffeur_id INTEGER REFERENCES chauffeurs(id) ON DELETE SET NULL,
+    type_carburant TEXT NOT NULL DEFAULT 'gazoil' CHECK(type_carburant IN ('gazoil', 'adblue')),
+    date_plein TEXT NOT NULL,
+    kilometrage INTEGER,
+    litres REAL,
+    prix_total REAL,
+    cree_le TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
-def _migrer_note_facturation(conn):
-    """Ajoute la colonne note à la table facturation si elle n'existe pas encore."""
-    colonnes = {row['name'] for row in conn.execute("PRAGMA table_info(facturation)").fetchall()}
-    if 'note' not in colonnes:
-        conn.execute('ALTER TABLE facturation ADD COLUMN note TEXT')
-        conn.commit()
+-- --- Facturation ---
+CREATE TABLE IF NOT EXISTS facturation (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mission_id INTEGER REFERENCES missions(id) ON DELETE SET NULL,
+    chauffeur_id INTEGER NOT NULL REFERENCES chauffeurs(id) ON DELETE CASCADE,
+    date_mission TEXT NOT NULL,
+    client TEXT NOT NULL,
+    numero_facture TEXT,
+    date_facturation TEXT,
+    note TEXT,
+    montant_ttc REAL,
+    taux_tva REAL NOT NULL DEFAULT 20,
+    montant_ht REAL,
+    facture_groupee_id INTEGER,
+    cree_le TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
+-- --- Gestion : charges saisies à la main (montants TTC) ---
+CREATE TABLE IF NOT EXISTS charges_manuelles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date_charge TEXT NOT NULL,
+    libelle TEXT NOT NULL,
+    categorie TEXT NOT NULL,
+    montant_ttc REAL NOT NULL,
+    taux_tva REAL NOT NULL DEFAULT 20,
+    cree_le TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
-def _migrer_vehicule_attitre(conn):
-    """Ajoute les colonnes de véhicule ATTITRÉ (permanent) si elles n'existent pas encore sur
-    une base déjà en production, et reprend l'attribution actuelle comme valeur de départ —
-    aucun chauffeur ne perd son véhicule du jour au lendemain à cause de cette migration."""
-    colonnes = {row['name'] for row in conn.execute("PRAGMA table_info(chauffeurs)").fetchall()}
-    if 'tracteur_attitre_id' not in colonnes:
-        conn.execute('ALTER TABLE chauffeurs ADD COLUMN tracteur_attitre_id INTEGER REFERENCES tracteurs(id) ON DELETE SET NULL')
-        conn.execute('UPDATE chauffeurs SET tracteur_attitre_id = tracteur_id')
-    if 'remorque_attitree_id' not in colonnes:
-        conn.execute('ALTER TABLE chauffeurs ADD COLUMN remorque_attitree_id INTEGER REFERENCES remorques(id) ON DELETE SET NULL')
-        conn.execute('UPDATE chauffeurs SET remorque_attitree_id = remorque_id')
-    if 'derniere_utilisation' not in colonnes:
-        conn.execute('ALTER TABLE chauffeurs ADD COLUMN derniere_utilisation TEXT')
-    conn.commit()
+-- --- Gestion : paramètres (taux de TVA des charges reprises automatiquement) ---
+CREATE TABLE IF NOT EXISTS parametres_gestion (
+    cle TEXT PRIMARY KEY,
+    valeur TEXT NOT NULL
+);
 
+-- --- Facturation : factures globales couvrant plusieurs lignes sans montant (payé au nombre de tours) ---
+CREATE TABLE IF NOT EXISTS factures_groupees (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mois TEXT NOT NULL,
+    numero_facture TEXT,
+    date_facturation TEXT,
+    montant_ht REAL NOT NULL,
+    taux_tva REAL NOT NULL DEFAULT 20,
+    clients TEXT,
+    note TEXT,
+    cree_le TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
-def seed_admin(identifiant=None, mot_de_passe=None):
-    """Crée le tout premier compte modérateur si la base est vide.
-    En production, définissez ADMIN_IDENTIFIANT et ADMIN_MOTDEPASSE en variables
-    d'environnement plutôt que de garder les valeurs de démonstration par défaut."""
-    identifiant = identifiant or os.environ.get('ADMIN_IDENTIFIANT', 'admin')
-    mot_de_passe = mot_de_passe or os.environ.get('ADMIN_MOTDEPASSE', 'blondel2026')
-    from werkzeug.security import generate_password_hash
-    conn = get_connection()
-    existe = conn.execute(
-        "SELECT id FROM utilisateurs WHERE role = 'moderateur' LIMIT 1"
-    ).fetchone()
-    if not existe:
-        conn.execute(
-            "INSERT INTO utilisateurs (identifiant, mot_de_passe_hash, role) VALUES (?, ?, 'moderateur')",
-            (identifiant, generate_password_hash(mot_de_passe))
-        )
-        conn.commit()
-        print(f"Compte modérateur initial créé : {identifiant} / {mot_de_passe}")
-    conn.close()
+-- --- Gestion : salaires NETS mensuels par chauffeur (indemnités de route incluses) ---
+-- Pas de clé étrangère : l'historique comptable doit survivre à la suppression d'un chauffeur.
+CREATE TABLE IF NOT EXISTS salaires (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chauffeur_id INTEGER NOT NULL,
+    chauffeur_nom TEXT,
+    mois TEXT NOT NULL,
+    brut REAL NOT NULL DEFAULT 0,
+    charges_patronales REAL NOT NULL DEFAULT 0,
+    net_paye REAL,
+    UNIQUE(chauffeur_id, mois)
+);
+
+-- --- Gestion : suivi de la DSN (déclaration sociale nominative) de chaque mois ---
+CREATE TABLE IF NOT EXISTS dsn_mensuelles (
+    mois TEXT PRIMARY KEY,
+    date_depot TEXT,
+    montant REAL,
+    note TEXT
+);
