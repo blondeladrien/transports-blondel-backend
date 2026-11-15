@@ -2202,6 +2202,25 @@ def liste_sauvegardes():
     return jsonify({'sauvegardes': sauvegardes.lister(), 'garde': sauvegardes.GARDER})
 
 
+@app.route('/api/sauvegardes/espace-disque', methods=['GET'])
+@authentification_requise(['moderateur'])
+def espace_disque():
+    """Place utilisée sur le disque qui contient la base, et part des données / sauvegardes."""
+    import shutil
+    from database import DB_PATH
+    dossier = os.path.dirname(DB_PATH)
+    total, utilise, libre = shutil.disk_usage(dossier)
+    taille_base = os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0
+    taille_sauvegardes = sum(s['taille'] for s in sauvegardes.lister())
+    # Disque persistant = le dossier de la base est sur un autre volume que la racine du serveur
+    try:
+        persistant = os.stat(dossier).st_dev != os.stat('/').st_dev
+    except OSError:
+        persistant = None
+    return jsonify({'total': total, 'utilise': utilise, 'libre': libre, 'taille_base': taille_base,
+                    'taille_sauvegardes': taille_sauvegardes, 'dossier': dossier, 'persistant': persistant})
+
+
 @app.route('/api/sauvegardes', methods=['POST'])
 @authentification_requise(['moderateur'])
 def creer_sauvegarde_manuelle():
