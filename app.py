@@ -1,9 +1,10 @@
 import os
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
-from flask import Flask, request, jsonify, g
+from flask import Flask, request, jsonify, g, send_file
 from werkzeug.security import generate_password_hash, check_password_hash
 from database import get_connection, init_db, seed_admin
+import sauvegardes
 from auth import generer_token, authentification_requise, verifier_token, serializer
 
 FUSEAU_FR = ZoneInfo('Europe/Paris')
@@ -1653,8 +1654,14 @@ def health():
 # Initialise la base au chargement du module, pour que ça fonctionne aussi
 # quand l'app est lancée par gunicorn (production) et pas seulement par
 # `python3 app.py` (local) — gunicorn n'exécute jamais le bloc __main__ ci-dessous.
+# Copie de sécurité AVANT toute migration : si une mise à jour se passe mal, on peut revenir en arrière.
+try:
+    sauvegardes.creer_sauvegarde('demarrage')
+except Exception as _erreur:
+    print(f'[sauvegarde au démarrage] échec : {_erreur}', flush=True)
 init_db()
 seed_admin()
+sauvegardes.demarrer_sauvegardes_automatiques()
 
 # ============================================================
 # GESTION : charges manuelles, paramètres de TVA, compte de résultat
@@ -2183,6 +2190,52 @@ def compte_de_resultat():
         'tva_a_payer': float(tva_collectee - tva_deductible),
         'parametres': params,
     })
+
+
+# ============================================================
+# SAUVEGARDES DE LA BASE (modérateur uniquement)
+# ============================================================
+
+@app.route('/api/sauvegardes', methods=['GET'])
+@authentification_requise(['moderateur'])
+def liste_sauvegardes():
+    return jsonify({'sauvegardes': sauvegardes.lister(), 'garde': sauvegardes.GARDER})
+
+
+@app.route('/api/sauvegardes', methods=['POST'])
+@authentification_requise(['moderateur'])
+def creer_sauvegarde_manuelle():
+    try:
+        nom = sauvegardes.creer_sauvegarde('manuelle')
+    except Exception as erreur:
+        return jsonify({'erreur': f'Sauvegarde impossible : {erreur}'}), 500
+    return jsonify({'nom': nom}), 201
+
+
+@app.route('/api/sauvegardes/telecharger', methods=['GET'])
+@authentification_requise(['moderateur'])
+def telecharger_copie_fraiche():
+    """Copie fraîche de la base, envoyée directement (rien n'est conservé sur le serveur)."""
+    import tempfile
+    descripteur, chemin = tempfile.mkstemp(suffix='.db')
+    os.close(descripteur)
+    try:
+        sauvegardes.copie_temporaire(chemin)
+    except Exception as erreur:
+        os.remove(chemin)
+        return jsonify({'erreur': f'Sauvegarde impossible : {erreur}'}), 500
+    reponse = send_file(chemin, as_attachment=True, download_name=f'transports_blondel_{aujourdhui_fr()}.db')
+    reponse.call_on_close(lambda: os.path.exists(chemin) and os.remove(chemin))
+    return reponse
+
+
+@app.route('/api/sauvegardes/fichier/<nom>', methods=['GET'])
+@authentification_requise(['moderateur'])
+def telecharger_sauvegarde(nom):
+    chemin = sauvegardes.chemin_sauvegarde(nom)
+    if not chemin:
+        return jsonify({'erreur': 'Sauvegarde introuvable'}), 404
+    return send_file(chemin, as_attachment=True, download_name=nom)
 
 
 if __name__ == '__main__':
