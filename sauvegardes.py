@@ -7,6 +7,7 @@ Les copies sont faites avec l'API de sauvegarde de SQLite : elles sont cohérent
 """
 import os
 import re
+import shutil
 import sqlite3
 import threading
 import time
@@ -45,6 +46,11 @@ def creer_sauvegarde(type_='manuelle'):
     if not os.path.exists(DB_PATH):
         return None
     os.makedirs(DOSSIER, exist_ok=True)
+    # Garde-fou : on ne remplit jamais le disque. Il faut au moins 50 Mo + 3 fois la taille de la base de libres.
+    if shutil.disk_usage(DOSSIER).free < 50 * 1024 * 1024 + 3 * os.path.getsize(DB_PATH):
+        nettoyer()
+        if shutil.disk_usage(DOSSIER).free < 50 * 1024 * 1024 + 3 * os.path.getsize(DB_PATH):
+            raise RuntimeError("Espace disque insuffisant pour une sauvegarde")
     nom = f"transports_blondel_{datetime.now(FUSEAU):%Y-%m-%d_%Hh%M}_{type_}.db"
     final = os.path.join(DOSSIER, nom)
     temporaire = f'{final}.{os.getpid()}.tmp'
