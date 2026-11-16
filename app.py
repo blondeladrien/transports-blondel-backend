@@ -2221,6 +2221,22 @@ def restaurer_chauffeur_supprime():
     return jsonify(resume)
 
 
+@app.route('/api/sauvegardes/restaurer', methods=['POST'])
+@authentification_requise(['moderateur'])
+def restaurer_toute_la_base():
+    d = request.get_json(force=True) or {}
+    if d.get('confirmation') != 'RESTAURER':
+        return jsonify({'erreur': 'Confirmation manquante'}), 400
+    try:
+        sauvegardes.restaurer_base(d.get('sauvegarde', ''))
+        init_db()  # remet à niveau une copie plus ancienne (tables ou colonnes ajoutées depuis)
+    except ValueError as erreur:
+        return jsonify({'erreur': str(erreur)}), 400
+    except Exception as erreur:
+        return jsonify({'erreur': f'Restauration impossible : {erreur}'}), 500
+    return jsonify({'ok': True})
+
+
 @app.route('/api/sauvegardes/espace-disque', methods=['GET'])
 @authentification_requise(['moderateur'])
 def espace_disque():
