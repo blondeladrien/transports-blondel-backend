@@ -2202,6 +2202,25 @@ def liste_sauvegardes():
     return jsonify({'sauvegardes': sauvegardes.lister(), 'garde': sauvegardes.GARDER})
 
 
+@app.route('/api/sauvegardes/chauffeurs-supprimes', methods=['GET'])
+@authentification_requise(['moderateur'])
+def liste_chauffeurs_supprimes():
+    return jsonify({'chauffeurs': sauvegardes.chauffeurs_supprimes()})
+
+
+@app.route('/api/sauvegardes/restaurer-chauffeur', methods=['POST'])
+@authentification_requise(['moderateur'])
+def restaurer_chauffeur_supprime():
+    d = request.get_json(force=True) or {}
+    try:
+        resume = sauvegardes.restaurer_chauffeur(d.get('sauvegarde', ''), int(d.get('chauffeur_id')))
+    except (ValueError, TypeError) as erreur:
+        return jsonify({'erreur': str(erreur)}), 400
+    except Exception as erreur:
+        return jsonify({'erreur': f'Récupération impossible : {erreur}'}), 500
+    return jsonify(resume)
+
+
 @app.route('/api/sauvegardes/espace-disque', methods=['GET'])
 @authentification_requise(['moderateur'])
 def espace_disque():
