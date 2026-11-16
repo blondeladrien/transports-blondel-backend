@@ -18,8 +18,8 @@ from database import DB_PATH
 
 FUSEAU = ZoneInfo('Europe/Paris')
 DOSSIER = os.path.join(os.path.dirname(DB_PATH), 'sauvegardes')
-GARDER = {'auto': 14, 'demarrage': 5, 'manuelle': 10}
-MOTIF = re.compile(r'^transports_blondel_(\d{4}-\d{2}-\d{2})_(\d{2})h(\d{2})_(auto|demarrage|manuelle)\.db$')
+GARDER = {'auto': 14, 'demarrage': 5, 'manuelle': 10, 'restauration': 5}
+MOTIF = re.compile(r'^transports_blondel_(\d{4}-\d{2}-\d{2})_(\d{2})h(\d{2})_(auto|demarrage|manuelle|restauration)\.db$')
 
 
 def _copier_base(destination):
@@ -228,3 +228,33 @@ def restaurer_chauffeur(nom_sauvegarde, chauffeur_id):
         except sqlite3.Error:
             pass
         conn.close()
+
+
+def restaurer_base(nom_sauvegarde):
+    """Remet TOUTE la base dans l'état d'une sauvegarde. Une copie de l'état actuel est faite avant (type « restauration »)."""
+    chemin = chemin_sauvegarde(nom_sauvegarde)
+    if not chemin:
+        raise ValueError('Sauvegarde introuvable')
+    import tempfile
+    descripteur, temporaire = tempfile.mkstemp(suffix='.db', dir=DOSSIER)
+    os.close(descripteur)
+    try:
+        # On travaille sur une copie de la sauvegarde choisie : elle ne peut pas être écrasée pendant l'opération
+        shutil.copyfile(chemin, temporaire)
+        controle = sqlite3.connect(temporaire)
+        try:
+            if controle.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
+                raise ValueError('Cette sauvegarde est abîmée : restauration annulée')
+        finally:
+            controle.close()
+        creer_sauvegarde('restauration')
+        source = sqlite3.connect(temporaire)
+        cible = sqlite3.connect(DB_PATH, timeout=30)
+        try:
+            source.backup(cible)
+        finally:
+            cible.close()
+            source.close()
+    finally:
+        if os.path.exists(temporaire):
+            os.remove(temporaire)
